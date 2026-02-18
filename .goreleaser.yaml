@@ -1,0 +1,47 @@
+project_name: sprout
+
+builds:
+  - id: sprout
+    main: ./apps/sprout/cmd/sprout
+    binary: sprout
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X sprout/internal/sprout.Version={{ .Version }}
+
+archives:
+  - id: binaries
+    builds:
+      - sprout
+    format: tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  use: github-native
+
+brews:
+  - name: sprout
+    commit_author:
+      name: github-actions[bot]
+      email: github-actions[bot]@users.noreply.github.com
+    repository:
+      owner: "{{ .Env.HOMEBREW_TAP_OWNER }}"
+      name: "{{ .Env.HOMEBREW_TAP_NAME }}"
+      branch: "{{ .Env.HOMEBREW_TAP_BRANCH }}"
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    directory: Formula
+    homepage: "https://github.com/{{ .Env.GITHUB_REPOSITORY }}"
+    description: "Git worktree manager with terminal UI and tmux workflows."
+    install: |
+      bin.install "sprout"
+    test: |
+      system "#{bin}/sprout", "version"
