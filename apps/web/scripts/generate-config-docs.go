@@ -24,9 +24,24 @@ sidebar_position: 2
 
 Complete reference for all Sprout configuration options.
 
-## Configuration File
+## Configuration Files
 
-Sprout reads configuration from {{ backtick }}~/.config/sprout/config.toml{{ backtick }} by default. You can override this location with the {{ backtick }}SPROUT_CONFIG{{ backtick }} environment variable.
+Sprout loads configuration in the following order, with each layer overriding the previous:
+
+1. **Global config** — {{ backtick }}~/.config/sprout/config.toml{{ backtick }} (or {{ backtick }}$SPROUT_CONFIG{{ backtick }} if set)
+2. **Repo config** — {{ backtick }}.sprout.toml{{ backtick }} at the root of the current git repository
+3. **Environment variables** — highest priority, override everything
+
+The repo config only needs to contain the keys you want to override. Everything else falls back to the global config.
+
+### Example repo config
+
+{{ backtick }}{{ backtick }}{{ backtick }}toml
+# .sprout.toml (committed to the repo)
+base_branch = "main"
+default_agent_type = "claude"
+auto_start_agent = false
+{{ backtick }}{{ backtick }}{{ backtick }}
 
 ## Configuration Options
 
@@ -41,7 +56,7 @@ Sprout reads configuration from {{ backtick }}~/.config/sprout/config.toml{{ bac
 # ~/.config/sprout/config.toml
 
 # Base branch for new worktrees
-base_branch = "dev"
+base_branch = "main"
 
 # Template for worktree root directory
 # {{ .OpenBrace }}repo{{ .CloseBrace }} is replaced with repository name
@@ -142,7 +157,7 @@ func main() {
 		{
 			Name:        "base_branch",
 			Type:        "string",
-			Default:     "dev",
+			Default:     "main",
 			EnvVar:      "SPROUT_BASE_BRANCH",
 			Description: "Default base branch for new worktrees",
 		},

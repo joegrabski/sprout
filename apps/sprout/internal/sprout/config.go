@@ -26,7 +26,7 @@ type Config struct {
 
 func DefaultConfig() Config {
 	return Config{
-		BaseBranch:           "dev",
+		BaseBranch:           "main",
 		WorktreeRootTemplate: "../{repo}.worktrees",
 		AutoLaunch:           true,
 		AutoStartAgent:       true,
@@ -48,27 +48,56 @@ func DefaultConfig() Config {
 func LoadConfig() (Config, error) {
 	cfg := DefaultConfig()
 
-	configPath := os.Getenv("SPROUT_CONFIG")
-	if configPath == "" {
+	// 1. Global config
+	globalPath := os.Getenv("SPROUT_CONFIG")
+	if globalPath == "" {
 		home, err := os.UserHomeDir()
 		if err == nil {
-			configPath = filepath.Join(home, ".config", "sprout", "config.toml")
+			globalPath = filepath.Join(home, ".config", "sprout", "config.toml")
 		}
 	}
-
-	if configPath != "" {
-		if _, err := os.Stat(configPath); err == nil {
-			if err := parseTOMLFlat(configPath, &cfg); err != nil {
+	if globalPath != "" {
+		if _, err := os.Stat(globalPath); err == nil {
+			if err := parseTOMLFlat(globalPath, &cfg); err != nil {
 				return cfg, err
 			}
 		}
 	}
 
+	// 2. Repo-level config (.sprout.toml at git root), overrides global
+	if repoRoot, err := findGitRoot("."); err == nil {
+		repoConfigPath := filepath.Join(repoRoot, ".sprout.toml")
+		if _, err := os.Stat(repoConfigPath); err == nil {
+			if err := parseTOMLFlat(repoConfigPath, &cfg); err != nil {
+				return cfg, err
+			}
+		}
+	}
+
+	// 3. Env var overrides (highest priority)
 	applyEnvOverrides(&cfg)
 	if os.Getenv("SPROUT_EMIT_CD_MARKER") == "1" {
 		cfg.EmitCDMarker = true
 	}
 	return cfg, nil
+}
+
+// findGitRoot walks up from dir until it finds a directory containing .git.
+func findGitRoot(dir string) (string, error) {
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return "", err
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(abs, ".git")); err == nil {
+			return abs, nil
+		}
+		parent := filepath.Dir(abs)
+		if parent == abs {
+			return "", fmt.Errorf("not inside a git repository")
+		}
+		abs = parent
+	}
 }
 
 func parseTOMLFlat(path string, cfg *Config) error {
