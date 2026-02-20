@@ -5,20 +5,20 @@
 class Sprout < Formula
   desc "Git worktree manager with terminal UI and tmux workflows."
   homepage "https://github.com/joegrabski/sprout"
-  version "0.1.3"
+  version "0.1.4"
 
   on_macos do
     if Hardware::CPU.intel?
-      url "https://github.com/joegrabski/sprout/releases/download/v0.1.3/sprout_0.1.3_darwin_amd64.tar.gz"
-      sha256 "d5a97e66e29f47244179d64db9d0ec13ac2ff985870887d6107463760f028c93"
+      url "https://github.com/joegrabski/sprout/releases/download/v0.1.4/sprout_0.1.4_darwin_amd64.tar.gz"
+      sha256 "664f8ccafec68c730c8686645cbc70e8f99801b2808b9a1d4eb13b6033b055ae"
 
       def install
         bin.install "sprout"
       end
     end
     if Hardware::CPU.arm?
-      url "https://github.com/joegrabski/sprout/releases/download/v0.1.3/sprout_0.1.3_darwin_arm64.tar.gz"
-      sha256 "692123f62328e4f3d5ea1b8a40424881ede3ed5bcc6fa60e201d08ee5540e491"
+      url "https://github.com/joegrabski/sprout/releases/download/v0.1.4/sprout_0.1.4_darwin_arm64.tar.gz"
+      sha256 "8187e75d8097b39dc11c16c27eba892cbf44a6adc466147736af974d8f7bcc8f"
 
       def install
         bin.install "sprout"
@@ -28,15 +28,15 @@ class Sprout < Formula
 
   on_linux do
     if Hardware::CPU.intel? && Hardware::CPU.is_64_bit?
-      url "https://github.com/joegrabski/sprout/releases/download/v0.1.3/sprout_0.1.3_linux_amd64.tar.gz"
-      sha256 "8d798c958b700a5521be33b49a4b47ac1407f5a0a5ddf3010fa82233adea3afd"
+      url "https://github.com/joegrabski/sprout/releases/download/v0.1.4/sprout_0.1.4_linux_amd64.tar.gz"
+      sha256 "873cf2c3426e6f9a9deb7fb9e554c14ebf536d083b50211d4785aa9223d6a537"
       def install
         bin.install "sprout"
       end
     end
     if Hardware::CPU.arm? && Hardware::CPU.is_64_bit?
-      url "https://github.com/joegrabski/sprout/releases/download/v0.1.3/sprout_0.1.3_linux_arm64.tar.gz"
-      sha256 "c68a0e9d61ab23797843c37305279a7545e9323a7636902c44c427bbb529f550"
+      url "https://github.com/joegrabski/sprout/releases/download/v0.1.4/sprout_0.1.4_linux_arm64.tar.gz"
+      sha256 "23b78cbc271f79a171895e773621d97d4384644a43ef4f224d45c3629a449adf"
       def install
         bin.install "sprout"
       end
