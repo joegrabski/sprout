@@ -1,8 +1,17 @@
 # Go
 *.test
 *.out
+bin/
+apps/sprout/bin/
+sprout
+go.work.sum
 
 # Web
 apps/web/node_modules/
 apps/web/dist/
+apps/web/build/
+apps/web/.docusaurus/
 .wrangler/
+
+# OS
+.DS_Store
