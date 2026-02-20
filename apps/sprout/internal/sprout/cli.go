@@ -4,140 +4,221 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"strings"
+
+	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/lipgloss/table"
+	"github.com/spf13/cobra"
 )
 
-var Version = "dev"
-
-func Run(args []string) int {
-	cfg, err := LoadConfig()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		return 1
-	}
-	mgr := NewManager(cfg)
-
-	if len(args) == 0 {
-		return RunUI(mgr)
+var (
+	rootCmd = &cobra.Command{
+		Use:   "sprout",
+		Short: "sprout - git worktree manager with interactive TUI",
+		Long:  GetBannerANSI() + "\nsprout - git worktree manager with interactive TUI",
+		Run: func(cmd *cobra.Command, args []string) {
+			mgr := getManager()
+			os.Exit(RunUI(mgr))
+		},
 	}
 
-	cmd := args[0]
-	rest := args[1:]
+	uiCmd = &cobra.Command{
+		Use:   "ui",
+		Short: "Launch the interactive TUI",
+		Run: func(cmd *cobra.Command, args []string) {
+			mgr := getManager()
+			os.Exit(RunUI(mgr))
+		},
+	}
 
-	switch cmd {
-	case "ui":
-		return RunUI(mgr)
-	case "new":
-		return runNew(mgr, rest)
-	case "list":
-		return runList(mgr, rest)
-	case "go":
-		return runGo(mgr, rest)
-	case "path":
-		return runPath(mgr, rest)
-	case "launch":
-		return runLaunch(mgr, rest)
-	case "detach":
-		return runDetach(mgr, rest)
-	case "agent":
-		return runAgent(mgr, rest)
-	case "rm", "remove":
-		return runRemove(mgr, rest)
-	case "doctor":
-		return runDoctor(mgr, rest)
-	case "shell-hook":
-		return runShellHook(rest)
-	case "version", "--version", "-v":
-		fmt.Println(Version)
-		return 0
-	case "help", "--help", "-h":
-		printHelp(os.Stdout)
-		return 0
-	default:
-		fmt.Fprintf(os.Stderr, "error: unknown command: %s\n", cmd)
-		printHelp(os.Stderr)
-		return 1
+	newCmd = &cobra.Command{
+		Use:   "new [type] [name]",
+		Short: "Create a new worktree",
+		Run:   runNew,
+	}
+
+	listCmd = &cobra.Command{
+		Use:   "list",
+		Short: "List worktrees",
+		Run:   runList,
+	}
+
+	goCmd = &cobra.Command{
+		Use:   "go <target>",
+		Short: "Go to a worktree",
+		Run:   runGo,
+	}
+
+	pathCmd = &cobra.Command{
+		Use:   "path <target>",
+		Short: "Get the path of a worktree",
+		Run:   runPath,
+	}
+
+	launchCmd = &cobra.Command{
+		Use:   "launch <target>",
+		Short: "Launch a tmux session for a worktree",
+		Run:   runLaunch,
+	}
+
+	detachCmd = &cobra.Command{
+		Use:   "detach <target>",
+		Short: "Detach from a tmux session",
+		Run:   runDetach,
+	}
+
+	agentCmd = &cobra.Command{
+		Use:   "agent <action> <target>",
+		Short: "Manage agents (start, stop, attach)",
+		Args:  cobra.ExactArgs(2),
+		Run:   runAgent,
+	}
+
+	rmCmd = &cobra.Command{
+		Use:   "rm <target>",
+		Short: "Remove a worktree",
+		Run:   runRemove,
+	}
+
+	doctorCmd = &cobra.Command{
+		Use:   "doctor",
+		Short: "Check system health",
+		Run:   runDoctor,
+	}
+
+	shellHookCmd = &cobra.Command{
+		Use:   "shell-hook <shell>",
+		Short: "Generate shell hook",
+		Args:  cobra.ExactArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			hook, err := ShellHook(args[0])
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "error: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Print(hook)
+		},
+	}
+
+	versionCmd = &cobra.Command{
+		Use:   "version",
+		Short: "Show version",
+		Run: func(cmd *cobra.Command, args []string) {
+			fmt.Println(Version)
+		},
+	}
+)
+
+func emitCDMarkerIfEnabled(cfg Config, path string) {
+	if cfg.EmitCDMarker {
+		fmt.Printf("__SPROUT_CD__=%s\n", path)
 	}
 }
 
-func runNew(mgr *Manager, args []string) int {
-	base := ""
-	noLaunch := false
-	positionals := []string{}
+func init() {
+	newCmd.Flags().String("from", "", "Base branch to create from")
+	newCmd.Flags().String("from-branch", "", "Existing branch to create worktree from")
+	newCmd.Flags().Bool("no-launch", false, "Do not launch tmux session")
 
-	for i := 0; i < len(args); i++ {
-		a := args[i]
-		switch a {
-		case "--from":
-			if i+1 >= len(args) {
-				fmt.Fprintln(os.Stderr, "error: --from requires a branch")
-				return 1
-			}
-			base = args[i+1]
-			i++
-		case "--no-launch":
-			noLaunch = true
-		case "-h", "--help":
-			fmt.Fprintln(os.Stdout, "usage: sprout new <type> <name> [--from <base>] [--no-launch]")
-			return 0
-		default:
-			if strings.HasPrefix(a, "-") {
-				fmt.Fprintf(os.Stderr, "error: unknown option for new: %s\n", a)
-				return 1
-			}
-			positionals = append(positionals, a)
-		}
-	}
+	listCmd.Flags().Bool("json", false, "Output in JSON format")
 
-	if len(positionals) < 2 {
-		fmt.Fprintln(os.Stderr, "error: usage: sprout new <type> <name> [--from <base>] [--no-launch]")
-		return 1
-	}
-	launch := mgr.Cfg.AutoLaunch && !noLaunch
-	branchType := positionals[0]
-	name := strings.Join(positionals[1:], " ")
-	_, path, err := mgr.NewWorktree(NewOptions{
-		Type:       branchType,
-		Name:       name,
-		BaseBranch: base,
-		Launch:     launch,
-	})
+	goCmd.Flags().Bool("attach", false, "Attach to tmux session")
+	goCmd.Flags().Bool("no-launch", false, "Do not launch tmux session")
+
+	launchCmd.Flags().Bool("no-attach", false, "Do not attach to tmux session")
+
+	rmCmd.Flags().Bool("force", false, "Force removal")
+	rmCmd.Flags().Bool("delete-branch", false, "Delete the branch associated with the worktree")
+
+	rootCmd.AddCommand(uiCmd, newCmd, listCmd, goCmd, pathCmd, launchCmd, detachCmd, agentCmd, rmCmd, doctorCmd, shellHookCmd, versionCmd)
+}
+
+func getManager() *Manager {
+	cfg, err := LoadConfig()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		fmt.Fprintf(os.Stderr, "error loading config: %v\n", err)
+		os.Exit(1)
+	}
+	return NewManager(cfg)
+}
+
+func Run(args []string) int {
+	// We pass nothing to Execute() as it uses os.Args by default.
+	// But if we want to pass specific args, we can.
+	if err := rootCmd.Execute(); err != nil {
 		return 1
 	}
-	if mgr.Cfg.AutoStartAgent {
-		if _, _, err := mgr.StartAgent(AgentOptions{Target: path, Attach: false}); err != nil {
-			fmt.Fprintf(os.Stderr, "warn: created worktree but could not auto-start agent: %v\n", err)
-		}
-	}
-	fmt.Println(path)
-	emitCDMarkerIfEnabled(mgr.Cfg, path)
 	return 0
 }
 
-func runList(mgr *Manager, args []string) int {
-	jsonOut := false
-	for _, a := range args {
-		switch a {
-		case "--json":
-			jsonOut = true
-		default:
-			fmt.Fprintln(os.Stderr, "error: usage: sprout list [--json]")
-			return 1
+func runNew(cmd *cobra.Command, args []string) {
+	mgr := getManager()
+	from, _ := cmd.Flags().GetString("from")
+	fromBranch, _ := cmd.Flags().GetString("from-branch")
+	noLaunch, _ := cmd.Flags().GetBool("no-launch")
+
+	if fromBranch != "" {
+		// Existing branch mode
+		launch := mgr.Cfg.AutoLaunch && !noLaunch
+		_, path, err := mgr.NewWorktree(NewOptions{
+			FromBranch: fromBranch,
+			Launch:     launch,
+		})
+		if err != nil {
+			fmt.Fprintln(os.Stderr, ErrorMsg(err.Error()))
+			os.Exit(1)
+		}
+		if mgr.Cfg.AutoStartAgent {
+			if _, _, err := mgr.StartAgent(AgentOptions{Target: path, Attach: false}); err != nil {
+				fmt.Fprintln(os.Stderr, WarnMsg(fmt.Sprintf("created worktree but could not auto-start agent: %v", err)))
+			}
+		}
+		fmt.Println(SuccessMsg(fmt.Sprintf("Created worktree from %s: %s", StyleBranch.Render(fromBranch), StylePath.Render(path))))
+		emitCDMarkerIfEnabled(mgr.Cfg, path)
+		return
+	}
+
+	if len(args) < 2 {
+		fmt.Fprintln(os.Stderr, ErrorMsg("usage: sprout new <type> <name> [--from <base>] [--no-launch]"))
+		fmt.Fprintln(os.Stderr, StyleDim.Render("       or: sprout new --from-branch <existing-branch>"))
+		os.Exit(1)
+	}
+
+	launch := mgr.Cfg.AutoLaunch && !noLaunch
+	branchType := args[0]
+	name := strings.Join(args[1:], " ")
+	_, path, err := mgr.NewWorktree(NewOptions{
+		Type:       branchType,
+		Name:       name,
+		BaseBranch: from,
+		Launch:     launch,
+	})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, ErrorMsg(err.Error()))
+		os.Exit(1)
+	}
+	if mgr.Cfg.AutoStartAgent {
+		if _, _, err := mgr.StartAgent(AgentOptions{Target: path, Attach: false}); err != nil {
+			fmt.Fprintln(os.Stderr, WarnMsg(fmt.Sprintf("created worktree but could not auto-start agent: %v", err)))
 		}
 	}
+	fmt.Println(SuccessMsg(fmt.Sprintf("Created worktree: %s", StylePath.Render(path))))
+	emitCDMarkerIfEnabled(mgr.Cfg, path)
+}
+
+func runList(cmd *cobra.Command, args []string) {
+	mgr := getManager()
+	jsonOut, _ := cmd.Flags().GetBool("json")
 
 	items, err := mgr.ListWorktrees()
 	if err != nil {
 		if errors.Is(err, ErrNotGitRepo) {
 			fmt.Fprintln(os.Stderr, "error: run this command inside a git worktree")
-			return 1
+			os.Exit(1)
 		}
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		return 1
+		os.Exit(1)
 	}
 
 	if jsonOut {
@@ -145,12 +226,16 @@ func runList(mgr *Manager, args []string) int {
 		enc.SetIndent("", "  ")
 		if err := enc.Encode(items); err != nil {
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)
-			return 1
+			os.Exit(1)
 		}
-		return 0
+		return
 	}
 
-	fmt.Printf("%-3s %-35s %-7s %-6s %-6s %s\n", "CUR", "BRANCH", "STATUS", "TMUX", "AGENT", "PATH")
+	t := table.New().
+		Border(lipgloss.NormalBorder()).
+		BorderStyle(lipgloss.NewStyle().Foreground(ColorGreen)).
+		Headers("CUR", "BRANCH", "STATUS", "TMUX", "AGENT", "PATH")
+
 	for _, it := range items {
 		cur := ""
 		if it.Current {
@@ -164,240 +249,179 @@ func runList(mgr *Manager, args []string) int {
 		if it.Dirty {
 			status = "dirty"
 		}
-		fmt.Printf("%-3s %-35s %-7s %-6s %-6s %s\n", cur, branch, status, it.TmuxState, it.AgentState, it.Path)
+
+		// Styles
+		curStr := cur
+		if it.Current {
+			curStr = StyleCurrentWorktree.Render(cur)
+		}
+
+		branchStr := StyleBranch.Render(branch)
+		if it.Current {
+			branchStr = StyleCurrentWorktree.Render(branch)
+		}
+
+		statusStr := StyleClean.Render(status)
+		if it.Dirty {
+			statusStr = StyleDirty.Render(status)
+		}
+
+		tmuxStr := StyleDim.Render(it.TmuxState)
+		if it.TmuxState == "yes" {
+			tmuxStr = StyleClean.Render(it.TmuxState)
+		}
+
+		agentStr := StyleDim.Render(it.AgentState)
+		if it.AgentState == "yes" {
+			agentStr = StyleClean.Render(it.AgentState)
+		}
+
+		pathStr := StylePath.Render(it.Path)
+
+		t.Row(curStr, branchStr, statusStr, tmuxStr, agentStr, pathStr)
 	}
-	return 0
+
+	fmt.Println(t)
 }
 
-func runPath(mgr *Manager, args []string) int {
+func runGo(cmd *cobra.Command, args []string) {
 	if len(args) != 1 {
-		fmt.Fprintln(os.Stderr, "error: usage: sprout path <branch-or-worktree>")
-		return 1
+		fmt.Fprintln(os.Stderr, ErrorMsg("usage: sprout go <target> [--attach] [--no-launch]"))
+		os.Exit(1)
 	}
+	mgr := getManager()
+	attach, _ := cmd.Flags().GetBool("attach")
+	noLaunch, _ := cmd.Flags().GetBool("no-launch")
+
+	path, err := mgr.Go(GoOptions{Target: args[0], Launch: !noLaunch, Attach: attach})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, ErrorMsg(err.Error()))
+		os.Exit(1)
+	}
+	fmt.Println(SuccessMsg(StylePath.Render(path)))
+	emitCDMarkerIfEnabled(mgr.Cfg, path)
+}
+
+func runPath(cmd *cobra.Command, args []string) {
+	if len(args) != 1 {
+		fmt.Fprintln(os.Stderr, ErrorMsg("usage: sprout path <target>"))
+		os.Exit(1)
+	}
+	mgr := getManager()
 	path, err := mgr.Path(args[0])
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		return 1
+		fmt.Fprintln(os.Stderr, ErrorMsg(err.Error()))
+		os.Exit(1)
 	}
-	fmt.Println(path)
-	return 0
+	fmt.Println(StylePath.Render(path))
 }
 
-func runGo(mgr *Manager, args []string) int {
-	attach := false
-	launch := true
-	positionals := []string{}
-	for _, a := range args {
-		switch a {
-		case "--attach":
-			attach = true
-		case "--no-launch":
-			launch = false
-		default:
-			if strings.HasPrefix(a, "-") {
-				fmt.Fprintf(os.Stderr, "error: unknown option for go: %s\n", a)
-				return 1
-			}
-			positionals = append(positionals, a)
-		}
-	}
-	if len(positionals) != 1 {
-		fmt.Fprintln(os.Stderr, "error: usage: sprout go <branch-or-worktree> [--attach] [--no-launch]")
-		return 1
-	}
-	path, err := mgr.Go(GoOptions{Target: positionals[0], Launch: launch, Attach: attach})
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		return 1
-	}
-	fmt.Println(path)
-	emitCDMarkerIfEnabled(mgr.Cfg, path)
-	return 0
-}
-
-func runLaunch(mgr *Manager, args []string) int {
-	noAttach := false
-	positionals := []string{}
-	for _, a := range args {
-		switch a {
-		case "--no-attach":
-			noAttach = true
-		default:
-			if strings.HasPrefix(a, "-") {
-				fmt.Fprintf(os.Stderr, "error: unknown option for launch: %s\n", a)
-				return 1
-			}
-			positionals = append(positionals, a)
-		}
-	}
-	if len(positionals) != 1 {
-		fmt.Fprintln(os.Stderr, "error: usage: sprout launch <branch-or-worktree> [--no-attach]")
-		return 1
-	}
-	path, err := mgr.Launch(LaunchOptions{Target: positionals[0], NoAttach: noAttach})
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		return 1
-	}
-	fmt.Println(path)
-	return 0
-}
-
-func runDetach(mgr *Manager, args []string) int {
+func runLaunch(cmd *cobra.Command, args []string) {
 	if len(args) != 1 {
-		fmt.Fprintln(os.Stderr, "error: usage: sprout detach <branch-or-worktree>")
-		return 1
+		fmt.Fprintln(os.Stderr, ErrorMsg("usage: sprout launch <target> [--no-attach]"))
+		os.Exit(1)
 	}
+	mgr := getManager()
+	noAttach, _ := cmd.Flags().GetBool("no-attach")
+	path, err := mgr.Launch(LaunchOptions{Target: args[0], NoAttach: noAttach})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, ErrorMsg(err.Error()))
+		os.Exit(1)
+	}
+	fmt.Println(SuccessMsg(fmt.Sprintf("Launched %s", StylePath.Render(path))))
+}
+
+func runDetach(cmd *cobra.Command, args []string) {
+	if len(args) != 1 {
+		fmt.Fprintln(os.Stderr, ErrorMsg("usage: sprout detach <target>"))
+		os.Exit(1)
+	}
+	mgr := getManager()
 	path, detached, err := mgr.Detach(args[0])
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		return 1
+		fmt.Fprintln(os.Stderr, ErrorMsg(err.Error()))
+		os.Exit(1)
 	}
 	if detached {
-		fmt.Printf("detached %s\n", path)
+		fmt.Println(SuccessMsg(fmt.Sprintf("Detached %s", StylePath.Render(path))))
 	} else {
-		fmt.Printf("session not running: %s\n", path)
+		fmt.Println(InfoMsg(fmt.Sprintf("Session not running: %s", StylePath.Render(path))))
 	}
-	return 0
 }
 
-func runAgent(mgr *Manager, args []string) int {
-	if len(args) < 2 {
-		fmt.Fprintln(os.Stderr, "error: usage: sprout agent <start|stop|attach> <branch-or-worktree>")
-		return 1
-	}
+func runAgent(cmd *cobra.Command, args []string) {
+	mgr := getManager()
 	action := args[0]
 	target := args[1]
 	switch action {
 	case "start":
 		path, already, err := mgr.StartAgent(AgentOptions{Target: target, Attach: false})
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "error: %v\n", err)
-			return 1
+			fmt.Fprintln(os.Stderr, ErrorMsg(err.Error()))
+			os.Exit(1)
 		}
 		if already {
-			fmt.Printf("agent already running: %s\n", path)
+			fmt.Println(InfoMsg(fmt.Sprintf("Agent already running: %s", StylePath.Render(path))))
 		} else {
-			fmt.Printf("agent started: %s\n", path)
+			fmt.Println(SuccessMsg(fmt.Sprintf("Agent started: %s", StylePath.Render(path))))
 		}
-		return 0
 	case "attach":
 		path, err := mgr.AttachAgent(target)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "error: %v\n", err)
-			return 1
+			fmt.Fprintln(os.Stderr, ErrorMsg(err.Error()))
+			os.Exit(1)
 		}
-		fmt.Printf("agent attached: %s\n", path)
-		return 0
+		fmt.Println(SuccessMsg(fmt.Sprintf("Agent attached: %s", StylePath.Render(path))))
 	case "stop":
 		path, stopped, err := mgr.StopAgent(target)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "error: %v\n", err)
-			return 1
+			fmt.Fprintln(os.Stderr, ErrorMsg(err.Error()))
+			os.Exit(1)
 		}
 		if stopped {
-			fmt.Printf("agent stopped: %s\n", path)
+			fmt.Println(SuccessMsg(fmt.Sprintf("Agent stopped: %s", StylePath.Render(path))))
 		} else {
-			fmt.Printf("agent not running: %s\n", path)
+			fmt.Println(InfoMsg(fmt.Sprintf("Agent not running: %s", StylePath.Render(path))))
 		}
-		return 0
 	default:
-		fmt.Fprintln(os.Stderr, "error: usage: sprout agent <start|stop|attach> <branch-or-worktree>")
-		return 1
+		fmt.Fprintln(os.Stderr, ErrorMsg(fmt.Sprintf("unknown action for agent: %s", action)))
+		os.Exit(1)
 	}
 }
 
-func runRemove(mgr *Manager, args []string) int {
-	force := false
-	deleteBranch := false
-	positionals := []string{}
-	for _, a := range args {
-		switch a {
-		case "--force":
-			force = true
-		case "--delete-branch":
-			deleteBranch = true
-		default:
-			if strings.HasPrefix(a, "-") {
-				fmt.Fprintf(os.Stderr, "error: unknown option for rm: %s\n", a)
-				return 1
-			}
-			positionals = append(positionals, a)
-		}
+func runRemove(cmd *cobra.Command, args []string) {
+	if len(args) != 1 {
+		fmt.Fprintln(os.Stderr, ErrorMsg("usage: sprout rm <target> [--delete-branch] [--force]"))
+		os.Exit(1)
 	}
-	if len(positionals) != 1 {
-		fmt.Fprintln(os.Stderr, "error: usage: sprout rm <branch-or-worktree> [--delete-branch] [--force]")
-		return 1
-	}
-	path, warnings, err := mgr.Remove(RemoveOptions{Target: positionals[0], Force: force, DeleteBranch: deleteBranch})
+	mgr := getManager()
+	force, _ := cmd.Flags().GetBool("force")
+	deleteBranch, _ := cmd.Flags().GetBool("delete-branch")
+
+	path, warnings, err := mgr.Remove(RemoveOptions{Target: args[0], Force: force, DeleteBranch: deleteBranch})
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		return 1
+		fmt.Fprintln(os.Stderr, ErrorMsg(err.Error()))
+		os.Exit(1)
 	}
 	for _, w := range warnings {
-		fmt.Fprintf(os.Stderr, "warn: %s\n", w)
+		fmt.Fprintln(os.Stderr, WarnMsg(w))
 	}
-	fmt.Printf("removed %s\n", path)
-	return 0
+	fmt.Println(SuccessMsg(fmt.Sprintf("Removed %s", StylePath.Render(path))))
 }
 
-func runDoctor(mgr *Manager, args []string) int {
-	if len(args) != 0 {
-		fmt.Fprintln(os.Stderr, "error: usage: sprout doctor")
-		return 1
-	}
+func runDoctor(cmd *cobra.Command, args []string) {
+	mgr := getManager()
 	report := mgr.Doctor()
 	for _, line := range report.Lines {
-		fmt.Println(line)
+		if strings.HasPrefix(line, "ok") {
+			fmt.Println(SuccessMsg(strings.TrimPrefix(line, "ok   ")))
+		} else if strings.HasPrefix(line, "miss") {
+			fmt.Println(ErrorMsg(strings.TrimPrefix(line, "miss ")))
+		} else if strings.HasPrefix(line, "warn") {
+			fmt.Println(WarnMsg(strings.TrimPrefix(line, "warn ")))
+		} else {
+			fmt.Println(line)
+		}
 	}
-	return report.ExitCode
-}
-
-func runShellHook(args []string) int {
-	if len(args) != 1 {
-		fmt.Fprintln(os.Stderr, "error: usage: sprout shell-hook <zsh|bash|fish>")
-		return 1
-	}
-	hook, err := ShellHook(args[0])
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		return 1
-	}
-	fmt.Print(hook)
-	return 0
-}
-
-func emitCDMarkerIfEnabled(cfg Config, path string) {
-	if cfg.EmitCDMarker {
-		fmt.Printf("__SPROUT_CD__=%s\n", path)
-	}
-}
-
-func printHelp(w io.Writer) {
-	fmt.Fprint(w, `sprout - git worktree manager with interactive TUI
-
-Usage:
-  sprout                      # launch TUI
-  sprout ui
-  sprout new <type> <name> [--from <base>] [--no-launch]
-  sprout list [--json]
-  sprout go <branch-or-worktree> [--attach] [--no-launch]
-  sprout path <branch-or-worktree>
-  sprout launch <branch-or-worktree> [--no-attach]
-  sprout detach <branch-or-worktree>
-  sprout agent <start|stop|attach> <branch-or-worktree>
-  sprout rm <branch-or-worktree> [--delete-branch] [--force]
-  sprout doctor
-  sprout shell-hook <zsh|bash|fish>
-  sprout version
-  sprout help
-
-Examples:
-  sprout new feat checkout-redesign
-  sprout go feat/checkout-redesign
-  sprout detach feat/checkout-redesign
-  sprout agent start feat/checkout-redesign
-  sprout rm feat/checkout-redesign --delete-branch
-  eval "$(sprout shell-hook zsh)"
-`)
+	os.Exit(report.ExitCode)
 }

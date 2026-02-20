@@ -7,7 +7,35 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/BurntSushi/toml"
 )
+
+type SessionLayout struct {
+	Windows []WindowLayout
+}
+
+type WindowLayout struct {
+	Name  string
+	Panes []PaneLayout
+}
+
+type PaneLayout struct {
+	Command string
+}
+
+// WindowConfig defines a named tmux window with panes for the structured config.
+type WindowConfig struct {
+	Name   string       `toml:"name"`
+	Layout string       `toml:"layout"` // tmux layout: even-horizontal, even-vertical, tiled, main-horizontal, main-vertical
+	Panes  []PaneConfig `toml:"panes"`
+}
+
+// PaneConfig defines a single tmux pane within a window.
+type PaneConfig struct {
+	Dir string `toml:"dir"` // working dir: abs path, ~/..., {worktree}/..., or empty for worktree root
+	Run string `toml:"run"` // command to execute
+}
 
 type Config struct {
 	BaseBranch           string
@@ -22,6 +50,8 @@ type Config struct {
 	AgentCommands        map[string]string
 	SessionPrefix        string
 	EmitCDMarker         bool
+	SessionLayouts       map[string]SessionLayout
+	Windows              []WindowConfig // ordered window/pane definitions from [[windows]]
 }
 
 func DefaultConfig() Config {
@@ -48,6 +78,12 @@ func DefaultConfig() Config {
 func LoadConfig() (Config, error) {
 	cfg := DefaultConfig()
 
+	// Resolve repo name once for structured config scoping.
+	repoName := ""
+	if repoRoot, err := findGitRoot("."); err == nil {
+		repoName = filepath.Base(repoRoot)
+	}
+
 	// 1. Global config
 	globalPath := os.Getenv("SPROUT_CONFIG")
 	if globalPath == "" {
@@ -61,6 +97,9 @@ func LoadConfig() (Config, error) {
 			if err := parseTOMLFlat(globalPath, &cfg); err != nil {
 				return cfg, err
 			}
+			if err := parseTOMLStructured(globalPath, &cfg, repoName, false); err != nil {
+				return cfg, err
+			}
 		}
 	}
 
@@ -69,6 +108,9 @@ func LoadConfig() (Config, error) {
 		repoConfigPath := filepath.Join(repoRoot, ".sprout.toml")
 		if _, err := os.Stat(repoConfigPath); err == nil {
 			if err := parseTOMLFlat(repoConfigPath, &cfg); err != nil {
+				return cfg, err
+			}
+			if err := parseTOMLStructured(repoConfigPath, &cfg, "", true); err != nil {
 				return cfg, err
 			}
 		}
@@ -190,6 +232,61 @@ func parseTOMLFlat(path string, cfg *Config) error {
 			}
 			cfg.SessionPrefix = v
 		default:
+			if strings.HasPrefix(key, "window_") {
+				// Format: window_<winname> = ["cmd1", "cmd2"]
+				// This defines a global window layout (applies to all repos)
+				winName := strings.TrimPrefix(key, "window_")
+				v, err := parseStringArray(value)
+				if err == nil {
+					if cfg.SessionLayouts == nil {
+						cfg.SessionLayouts = map[string]SessionLayout{}
+					}
+					// Use "*" as key for global layouts
+					layout := cfg.SessionLayouts["*"]
+					window := WindowLayout{Name: winName}
+					for _, cmd := range v {
+						window.Panes = append(window.Panes, PaneLayout{Command: cmd})
+					}
+					layout.Windows = append(layout.Windows, window)
+					cfg.SessionLayouts["*"] = layout
+				}
+			}
+			if strings.HasPrefix(key, "layout_") {
+				// Format: layout_<repo>_win_<winname>_pane_<panenum> = "command"
+				// e.g. layout_sprout_win_main_pane_0 = "nvim ."
+				parts := strings.Split(key, "_")
+				if len(parts) >= 6 && parts[2] == "win" && parts[4] == "pane" {
+					repo := parts[1]
+					winName := parts[3]
+					paneIdx, _ := strconv.Atoi(parts[5])
+
+					if cfg.SessionLayouts == nil {
+						cfg.SessionLayouts = map[string]SessionLayout{}
+					}
+					layout := cfg.SessionLayouts[repo]
+					
+					// Find or create window
+					winIdx := -1
+					for i, w := range layout.Windows {
+						if w.Name == winName {
+							winIdx = i
+							break
+						}
+					}
+					if winIdx == -1 {
+						layout.Windows = append(layout.Windows, WindowLayout{Name: winName})
+						winIdx = len(layout.Windows) - 1
+					}
+
+					// Ensure panes array is large enough
+					for len(layout.Windows[winIdx].Panes) <= paneIdx {
+						layout.Windows[winIdx].Panes = append(layout.Windows[winIdx].Panes, PaneLayout{})
+					}
+					v, _ := parseString(value)
+					layout.Windows[winIdx].Panes[paneIdx].Command = v
+					cfg.SessionLayouts[repo] = layout
+				}
+			}
 			if strings.HasPrefix(key, "agent_command_") {
 				v, err := parseString(value)
 				if err != nil {
@@ -468,4 +565,36 @@ func applyEnvOverrides(cfg *Config) {
 	if v := os.Getenv("SPROUT_SESSION_PREFIX"); v != "" {
 		cfg.SessionPrefix = v
 	}
+}
+
+// parseTOMLStructured uses BurntSushi/toml to decode the structured [[windows]]
+// sections from a config file. It is separate from parseTOMLFlat so existing
+// flat key=value handling is unchanged.
+//
+// isRepoConfig=true  → reads top-level [[windows]] (from .sprout.toml)
+// isRepoConfig=false → reads [[repos.<repoName>.windows]] (from global config)
+func parseTOMLStructured(path string, cfg *Config, repoName string, isRepoConfig bool) error {
+	type rawRepo struct {
+		Windows []WindowConfig `toml:"windows"`
+	}
+	type rawFile struct {
+		Windows []WindowConfig       `toml:"windows"`
+		Repos   map[string]rawRepo   `toml:"repos"`
+	}
+
+	var raw rawFile
+	if _, err := toml.DecodeFile(path, &raw); err != nil {
+		return err
+	}
+
+	if isRepoConfig {
+		if len(raw.Windows) > 0 {
+			cfg.Windows = raw.Windows
+		}
+	} else if repoName != "" {
+		if repoCfg, ok := raw.Repos[repoName]; ok && len(repoCfg.Windows) > 0 {
+			cfg.Windows = repoCfg.Windows
+		}
+	}
+	return nil
 }
