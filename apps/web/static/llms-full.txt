@@ -1,0 +1,512 @@
+# Sprout
+
+> Sprout is a TUI for managing git worktrees with tmux sessions and AI coding agents. Work on multiple branches simultaneously without stashing or losing context.
+
+Each worktree gets its own tmux session with your editor, lazygit, and an AI agent, all isolated per branch.
+
+---
+
+# Introduction
+
+Sprout is a TUI for managing git worktrees with tmux sessions and AI coding agents. Work on multiple branches simultaneously without stashing or losing context.
+
+```bash
+# Create a worktree + branch
+sprout new feat checkout-redesign
+
+# Switch to it
+sprout go feat/checkout-redesign
+
+# Or use the interactive TUI
+sprout
+```
+
+Each worktree gets its own tmux session with your editor, lazygit, and an AI agent, all isolated per branch.
+
+## Quick start
+
+**1. Create a worktree**
+
+```bash
+sprout new feat checkout-redesign
+```
+
+Creates `feat/checkout-redesign`, sets up the worktree, launches tmux, and starts your agent.
+
+**2. Switch worktrees**
+
+```bash
+sprout go main
+sprout go feat/checkout-redesign
+```
+
+**3. View worktrees**
+
+```bash
+sprout list
+```
+
+**4. Manage sessions**
+
+```bash
+sprout launch feat/checkout-redesign
+sprout detach feat/checkout-redesign
+```
+
+**5. Manage agents**
+
+```bash
+sprout agent start feat/checkout-redesign
+sprout agent attach feat/checkout-redesign
+sprout agent stop feat/checkout-redesign
+```
+
+**6. Remove a worktree**
+
+```bash
+sprout rm feat/checkout-redesign
+sprout rm feat/checkout-redesign --delete-branch
+```
+
+## Recommended config
+
+```toml
+base_branch = "main"
+auto_launch = true
+auto_start_agent = true
+session_tools = ["agent", "lazygit", "nvim"]
+```
+
+---
+
+# Installation
+
+## Homebrew (macOS/Linux)
+
+```bash
+brew tap joegrabski/sprout
+brew install sprout
+```
+
+## Pre-built binaries
+
+Download from https://github.com/joegrabski/sprout/releases.
+
+```bash
+# macOS (Apple Silicon)
+curl -L https://github.com/joegrabski/sprout/releases/latest/download/sprout-darwin-arm64 -o sprout
+chmod +x sprout && sudo mv sprout /usr/local/bin/
+
+# macOS (Intel)
+curl -L https://github.com/joegrabski/sprout/releases/latest/download/sprout-darwin-amd64 -o sprout
+chmod +x sprout && sudo mv sprout /usr/local/bin/
+
+# Linux (amd64)
+curl -L https://github.com/joegrabski/sprout/releases/latest/download/sprout-linux-amd64 -o sprout
+chmod +x sprout && sudo mv sprout /usr/local/bin/
+```
+
+## Build from source
+
+Requires Go 1.21+.
+
+```bash
+go install github.com/joegrabski/sprout/apps/sprout/cmd/sprout@latest
+```
+
+## Verify
+
+```bash
+sprout version
+sprout doctor
+```
+
+## Shell integration
+
+Enables automatic directory changing with `sprout go` and `sprout new`.
+
+**Zsh**: add to `~/.zshrc`:
+```bash
+eval "$(sprout shell-hook zsh)"
+```
+
+**Bash**: add to `~/.bashrc`:
+```bash
+eval "$(sprout shell-hook bash)"
+```
+
+**Fish**: add to `~/.config/fish/config.fish`:
+```fish
+sprout shell-hook fish | source
+```
+
+Then reload your shell:
+```bash
+source ~/.zshrc
+```
+
+## Zsh completion
+
+Homebrew installs completions automatically. For manual installs:
+
+```bash
+mkdir -p ~/.zsh/completions
+cp completions/sprout.zsh ~/.zsh/completions/_sprout
+
+# Add to ~/.zshrc if not already present
+fpath=(~/.zsh/completions $fpath)
+autoload -Uz compinit && compinit
+```
+
+---
+
+# Configuration
+
+Config file: `~/.config/sprout/config.toml` (override with `SPROUT_CONFIG`).
+
+Sprout loads configuration in the following order, with each layer overriding the previous:
+
+1. **Global config**: `~/.config/sprout/config.toml` (or `$SPROUT_CONFIG` if set)
+2. **Repo config**: `.sprout.toml` at the root of the current git repository
+3. **Environment variables**: highest priority, override everything
+
+The repo config only needs to contain the keys you want to override. Everything else falls back to the global config.
+
+### Example repo config
+
+```toml
+# .sprout.toml (committed to the repo)
+base_branch = "main"
+default_agent_type = "claude"
+auto_start_agent = false
+```
+
+## Options
+
+| Option | Type | Default | Env | Description |
+| --- | --- | --- | --- | --- |
+| `base_branch` | string | `main` | `SPROUT_BASE_BRANCH` | Default base branch for new worktrees |
+| `worktree_root_template` | string | `../{repo}.worktrees` | `SPROUT_WORKTREE_ROOT_TEMPLATE` | Template for worktree root directory ({repo} is replaced with repo name) |
+| `auto_launch` | bool | `true` | `SPROUT_AUTO_LAUNCH` | Automatically launch tmux session when creating worktrees |
+| `auto_start_agent` | bool | `true` | `SPROUT_AUTO_START_AGENT` | Automatically start AI agent when creating worktrees |
+| `launch_nvim` | bool | `true` | `SPROUT_LAUNCH_NVIM` | Launch Neovim in tmux session |
+| `launch_lazygit` | bool | `true` | `SPROUT_LAUNCH_LAZYGIT` | Launch Lazygit in tmux session |
+| `agent_command` | string | `codex` | `SPROUT_AGENT_COMMAND` | Default agent command (deprecated: use default_agent_type) |
+| `default_agent_type` | string | `codex` | `SPROUT_DEFAULT_AGENT_TYPE` | Default AI agent type (codex, aider, claude, gemini) |
+| `session_prefix` | string | `sprout` | `SPROUT_SESSION_PREFIX` | Prefix for tmux session names |
+| `agent_command_*` | string | varies | `SPROUT_AGENT_COMMAND_*` | Custom command for specific agent type (* = agent type) |
+
+## Example
+
+```toml
+# ~/.config/sprout/config.toml
+
+base_branch = "main"
+worktree_root_template = "../{repo}.worktrees"
+auto_launch = true
+auto_start_agent = true
+launch_nvim = true
+launch_lazygit = true
+default_agent_type = "codex"
+session_prefix = "sprout"
+
+# Agent commands by type
+agent_command_codex = "codex"
+agent_command_aider = "aider --model gpt-4"
+agent_command_claude = "claude"
+agent_command_gemini = "gemini"
+```
+
+## session_tools
+
+Built-in values:
+- `agent`: runs `agent_command`
+- `lazygit`: runs `lazygit -p .`
+- `nvim`: runs `nvim .`
+
+Any other value is run as a shell command in its own tmux window (e.g. `"pnpm dev"`).
+
+## Environment variables
+
+`SPROUT_SESSION_TOOLS` accepts comma-separated or TOML-array syntax:
+
+```bash
+export SPROUT_SESSION_TOOLS="agent,lazygit,nvim"
+# or
+export SPROUT_SESSION_TOOLS='["agent","lazygit","nvim","pnpm dev"]'
+```
+
+---
+
+# CLI Reference
+
+## sprout / sprout ui
+
+Launch the interactive TUI for managing worktrees.
+
+## sprout new
+
+**Usage:** `sprout new <type> <name> [--from <base>] [--no-launch]`
+
+Create a new worktree with a branch. The branch name is `<type>/<name>`.
+
+Arguments:
+- `<type>`: Branch type prefix (e.g., feat, fix, chore)
+- `<name>`: Branch name (spaces allowed)
+
+Flags:
+- `--from <base>`: Base branch to create from (default: config.base_branch)
+- `--no-launch`: Don't auto-launch tmux session
+
+```bash
+sprout new feat checkout-redesign
+sprout new fix urgent-bug --from main
+sprout new chore update-deps --no-launch
+```
+
+## sprout go
+
+**Usage:** `sprout go <branch> [--attach] [--no-launch]`
+
+Switch to a worktree. With shell integration, changes your shell's directory.
+
+Flags:
+- `--attach`: Attach to existing tmux session if running
+- `--no-launch`: Don't launch tmux session if not running
+
+```bash
+sprout go main
+sprout go feat/checkout-redesign --attach
+```
+
+## sprout list
+
+**Usage:** `sprout list [--json]`
+
+List all worktrees with branch, status, tmux, and agent state.
+
+Flags:
+- `--json`: Output as JSON
+
+Output columns: CUR (current), BRANCH, STATUS (clean/dirty), TMUX (active/inactive/-), AGENT (active/inactive/-), PATH
+
+## sprout path
+
+**Usage:** `sprout path <branch>`
+
+Print the absolute path to a worktree. Useful for scripting.
+
+```bash
+cd $(sprout path feat/checkout)
+code $(sprout path main)
+```
+
+## sprout launch
+
+**Usage:** `sprout launch <branch> [--no-attach]`
+
+Start a tmux session for a worktree.
+
+Flags:
+- `--no-attach`: Launch session without attaching
+
+## sprout detach
+
+**Usage:** `sprout detach <branch>`
+
+Kill the tmux session for a worktree (worktree is not removed).
+
+## sprout agent
+
+**Usage:** `sprout agent <start|stop|attach> <branch>`
+
+Manage AI agent windows.
+
+Subcommands:
+- `start`: Start an agent in a new tmux window
+- `stop`: Stop the agent tmux window
+- `attach`: Attach to running agent window
+
+```bash
+sprout agent start feat/my-feature
+sprout agent attach feat/my-feature
+sprout agent stop feat/my-feature
+```
+
+## sprout rm
+
+**Usage:** `sprout rm <branch> [--delete-branch] [--force]`
+
+Remove a worktree. Stops any running sessions and agents.
+
+Flags:
+- `--delete-branch`: Also delete the git branch
+- `--force`: Force removal even if worktree is dirty
+
+```bash
+sprout rm feat/old-feature
+sprout rm fix/bug --delete-branch
+sprout rm dirty-worktree --force
+```
+
+## sprout doctor
+
+Check system dependencies and configuration. Exits `0` if all checks pass, `1` if any fail.
+
+Checks: git installation, tmux installation, configured agent commands, git repository detection, configuration file validity.
+
+## sprout shell-hook
+
+**Usage:** `sprout shell-hook <zsh|bash|fish>`
+
+Output shell integration code. Enables automatic directory changing with sprout commands.
+
+```bash
+# For Zsh (add to ~/.zshrc)
+eval "$(sprout shell-hook zsh)"
+
+# For Bash (add to ~/.bashrc)
+eval "$(sprout shell-hook bash)"
+
+# For Fish (add to ~/.config/fish/config.fish)
+sprout shell-hook fish | source
+```
+
+---
+
+# AI Agents
+
+Sprout runs AI coding agents in dedicated tmux windows within each worktree's session. Each worktree gets its own agent with independent context.
+
+## Supported agents
+
+- **Codex**: `npm install -g @openai/codex`
+- **Aider**: `pip install aider-chat`
+- **Claude Code**: see https://claude.ai/code
+- **Gemini**: see Google's Gemini CLI docs
+- **Custom**: any CLI tool you configure
+
+## Configuration
+
+```toml
+default_agent_type = "claude"
+auto_start_agent = true
+
+agent_command_codex = "codex"
+agent_command_aider = "aider --model gpt-4"
+agent_command_claude = "claude"
+agent_command_gemini = "gemini"
+```
+
+## Usage
+
+Agents start automatically when `auto_start_agent = true`. To control them manually:
+
+```bash
+sprout agent start feat/my-feature
+sprout agent attach feat/my-feature
+sprout agent stop feat/my-feature
+```
+
+Agents stop automatically when you remove a worktree.
+
+## API keys
+
+Set the relevant key for your agent:
+
+```bash
+export OPENAI_API_KEY="..."
+export ANTHROPIC_API_KEY="..."
+```
+
+Add to `~/.zshrc` (or equivalent) to persist.
+
+---
+
+# Troubleshooting
+
+Run `sprout doctor` first, it checks git, tmux, your config, and configured agents.
+
+## Command not found
+
+The binary isn't in PATH. Add its directory to `~/.zshrc`:
+
+```bash
+export PATH="/usr/local/bin:$PATH"
+```
+
+## Auto-cd not working
+
+Verify the shell hook is loaded:
+
+```bash
+type sprout
+# Should output: "sprout is a shell function"
+```
+
+If not, ensure your shell config includes `eval "$(sprout shell-hook zsh)"` and reload:
+
+```bash
+source ~/.zshrc
+```
+
+## Tmux session won't launch
+
+Check tmux is installed and the server is running:
+
+```bash
+tmux ls
+brew install tmux  # if not installed
+```
+
+Avoid running `sprout` from inside an existing tmux session.
+
+## "Branch already checked out"
+
+A branch can only be in one worktree at a time:
+
+```bash
+git worktree list   # find which worktree has it
+sprout rm <old-worktree>
+```
+
+## Can't remove worktree
+
+If you're inside the worktree directory, navigate out first:
+
+```bash
+cd ~
+sprout rm feat/my-feature
+```
+
+For dirty worktrees, use `--force`:
+
+```bash
+sprout rm feat/my-feature --force
+```
+
+## Agent won't start
+
+Check the agent CLI is installed and your API key is set:
+
+```bash
+sprout doctor
+echo $OPENAI_API_KEY
+echo $ANTHROPIC_API_KEY
+```
+
+## Config not loading
+
+Check the file exists at `~/.config/sprout/config.toml`. To use a custom path:
+
+```bash
+export SPROUT_CONFIG=~/my-config.toml
+```
+
+Validate with `sprout doctor`.
+
+## Getting help
+
+1. Run `sprout doctor` and note the output
+2. Check https://github.com/joegrabski/sprout/issues
+3. File a new issue with your OS, shell, `sprout version`, and `sprout doctor` output

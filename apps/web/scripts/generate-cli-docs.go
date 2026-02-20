@@ -119,10 +119,10 @@ func getCommandHelp(binary, cmd string) (helpText, usage, description string) {
 	case "ui":
 		usage = "sprout ui"
 		description = "Launch the interactive TUI for managing worktrees."
-		helpText = "The UI command launches an interactive terminal user interface where you can:\n- View all worktrees\n- Create new worktrees\n- Launch tmux sessions\n- Start/stop AI agents\n- Remove worktrees"
+		helpText = "The UI command launches an interactive terminal user interface where you can:\n- View all worktrees\n- Create new worktrees\n- Launch tmux sessions\n- Start/stop AI agents\n- Remove worktrees\n\nPrimary Hotkeys:\n- Enter / g : Attach to worktree session\n- d         : Detach from session\n- x         : Remove worktree (confirmation modal)\n- n         : Create new worktree\n- /         : Filter worktree list\n- r         : Refresh state\n- ?         : Open contextual help\n- q         : Quit"
 	case "new":
-		usage = "sprout new <type> <name> [--from <base>] [--no-launch]"
-		description = "Create a new worktree with a branch."
+		usage = "sprout new <type> <name> [--from <base>] [--from-branch <branch>] [--no-launch]"
+		description = "Create a new worktree."
 		helpText = `Creates a new git worktree and branch.
 
 Arguments:
@@ -130,13 +130,14 @@ Arguments:
   <name>  Branch name (spaces allowed)
 
 Flags:
-  --from <base>     Base branch to create from (default: config.base_branch)
-  --no-launch       Don't auto-launch tmux session
+  --from <base>           Base branch to create from (default: config.base_branch)
+  --from-branch <branch>  Existing local or remote branch to create worktree from
+  --no-launch             Don't auto-launch tmux session
 
 Examples:
   sprout new feat checkout-redesign
   sprout new fix urgent-bug --from main
-  sprout new chore update deps --no-launch`
+  sprout new --from-branch feat/existing-branch`
 	case "list":
 		usage = "sprout list [--json]"
 		description = "List all worktrees with their status."
@@ -270,6 +271,8 @@ The shell hook enables automatic directory changing when using sprout commands.
 
 Installation:
   # For Zsh (add to ~/.zshrc)
+  brew tap joegrabski/sprout
+  brew install sprout
   eval "$(sprout shell-hook zsh)"
 
   # For Bash (add to ~/.bashrc)

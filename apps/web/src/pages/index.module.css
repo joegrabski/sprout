@@ -456,7 +456,7 @@
 }
 
 [data-theme="dark"] .featuresSection {
-  background: #050d07;
+  background: var(--ifm-background-color);
   border-top-color: rgba(34, 212, 122, 0.06);
 }
 
@@ -586,12 +586,12 @@
 ───────────────────────────────────────────── */
 .demoSection {
   padding: 8rem 2rem;
-  background: #f2f8f4;
+  background: var(--ifm-background-color);
   border-top: 1px solid rgba(13, 175, 98, 0.07);
 }
 
 [data-theme="dark"] .demoSection {
-  background: #030806;
+  background: var(--ifm-background-color);
   border-top-color: rgba(34, 212, 122, 0.05);
 }
 
@@ -787,7 +787,7 @@
 }
 
 [data-theme="dark"] .tuiSection {
-  background: #050d07;
+  background: var(--ifm-background-color);
   border-top-color: rgba(34, 212, 122, 0.06);
 }
 
@@ -931,6 +931,28 @@
   font-size: 0.68rem;
 }
 
+.tuiTableHeaderCustom {
+  display: grid;
+  grid-template-columns: 2.5ch 1fr 6.5ch 7.5ch;
+  gap: 0 1ch;
+  color: rgba(255, 255, 255, 0.28);
+  font-size: 0.62rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  padding-bottom: 0.3rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  margin-bottom: 0.2rem;
+}
+
+.tuiTableRowCustom {
+  display: grid;
+  grid-template-columns: 2.5ch 1fr 6.5ch 7.5ch;
+  gap: 0 1ch;
+  padding: 0.15rem 0;
+  font-size: 0.68rem;
+}
+
 .tuiTableHeader {
   display: grid;
   grid-template-columns: 2.5ch 1fr 6.5ch 4.5ch 5.5ch;
@@ -970,12 +992,160 @@
   font-size: 0.62rem;
 }
 
+/* ─────────────────────────────────────────────
+   Tmux Section
+───────────────────────────────────────────── */
+.tmuxSection {
+  padding: 8rem 2rem;
+  background: var(--ifm-background-color);
+  border-top: 1px solid rgba(13, 175, 98, 0.07);
+}
+
+[data-theme="dark"] .tmuxSection {
+  background: var(--ifm-background-color);
+  border-top-color: rgba(34, 212, 122, 0.05);
+}
+
+.tmuxLayout {
+  display: grid;
+  grid-template-columns: 1.6fr 1fr;
+  gap: 5rem;
+  max-width: 1040px;
+  margin: 0 auto;
+  align-items: center;
+}
+
+.tmuxTerminal {
+  perspective: 1000px;
+}
+
+.tmuxFrame {
+  background: #0d1117;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.3);
+  display: flex;
+  flex-direction: column;
+  height: 320px;
+}
+
+.tmuxWindow {
+  flex: 1;
+  display: flex;
+}
+
+.tmuxPane {
+  display: flex;
+  flex-direction: column;
+}
+
+.tmuxPaneHeader {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.25rem 0.6rem;
+  background: rgba(255, 255, 255, 0.03);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  font-size: 0.55rem;
+  font-family: "JetBrains Mono", monospace;
+  color: rgba(255, 255, 255, 0.3);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.tmuxPaneContent {
+  padding: 0.75rem;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.65rem;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+.tmuxDivider {
+  width: 1px;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.tmuxStatus {
+  background: #22d47a;
+  color: #06100a;
+  padding: 0.15rem 0.6rem;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.58rem;
+  font-weight: 700;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.tmuxTabs {
+  display: flex;
+  gap: 0.75rem;
+}
+
+.tmuxTabActive {
+  background: rgba(0, 0, 0, 0.15);
+  padding: 0 0.3rem;
+  border-radius: 2px;
+}
+
+.tmuxTab {
+  opacity: 0.7;
+}
+
+.tmuxConfigBox {
+  background: rgba(0, 0, 0, 0.03);
+  border: 1px solid rgba(13, 175, 98, 0.12);
+  border-radius: 8px;
+  margin: 1.5rem 0;
+  overflow: hidden;
+}
+
+[data-theme="dark"] .tmuxConfigBox {
+  background: rgba(255, 255, 255, 0.02);
+  border-color: rgba(34, 212, 122, 0.1);
+}
+
+.tmuxConfigHeader {
+  background: rgba(13, 175, 98, 0.05);
+  padding: 0.4rem 0.75rem;
+  font-size: 0.62rem;
+  font-family: "JetBrains Mono", monospace;
+  color: var(--sprout-green);
+  border-bottom: 1px solid rgba(13, 175, 98, 0.1);
+  letter-spacing: 0.05em;
+}
+
+.tmuxConfigCode {
+  padding: 1.25rem;
+  margin: 0;
+  font-size: 0.72rem;
+  line-height: 1.6;
+  color: #3a5244;
+  background: transparent;
+  white-space: pre-wrap;
+}
+
+[data-theme="dark"] .tmuxConfigCode {
+  color: #a3be8c;
+}
+
 .tuiGreen {
   color: #22d47a;
 }
 
 .tuiRed {
   color: #e05252;
+}
+
+.tuiYellow {
+  color: #ebcb8b;
+}
+
+.tuiBlue {
+  color: #81a1c1;
 }
 
 .tuiDim {
@@ -1150,6 +1320,19 @@
   .tuiLayout {
     grid-template-columns: 1fr;
     gap: 3rem;
+  }
+
+  .tmuxLayout {
+    grid-template-columns: 1fr;
+    gap: 3rem;
+  }
+
+  .tmuxTerminal {
+    order: 2;
+  }
+
+  .tmuxCopy {
+    order: 1;
   }
 
   .ctaTitle {

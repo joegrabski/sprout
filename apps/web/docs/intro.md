@@ -17,7 +17,7 @@ sprout go feat/checkout-redesign
 sprout
 ```
 
-Each worktree gets its own tmux session with your editor, lazygit, and an AI agent — all isolated per branch.
+Each worktree gets its own tmux session with your editor, lazygit, and an AI agent, all isolated per branch.
 
 ## Quick start
 
@@ -64,11 +64,9 @@ sprout rm feat/checkout-redesign
 sprout rm feat/checkout-redesign --delete-branch
 ```
 
-## Recommended config
+## Stop stashing. Start sprouting.
 
-```toml
-base_branch = "main"
-auto_launch = true
-auto_start_agent = true
-session_tools = ["agent", "lazygit", "nvim"]
+```bash
+brew tap joegrabski/sprout
+brew install sprout
 ```

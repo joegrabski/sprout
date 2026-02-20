@@ -37,9 +37,9 @@ session_prefix = "sprout"
 ## `session_tools`
 
 Built-in values:
-- `agent` — runs `agent_command`
-- `lazygit` — runs `lazygit -p .`
-- `nvim` — runs `nvim .`
+- `agent`: runs `agent_command`
+- `lazygit`: runs `lazygit -p .`
+- `nvim`: runs `nvim .`
 
 Any other value is run as a shell command in its own tmux window (e.g. `"pnpm dev"`).
 

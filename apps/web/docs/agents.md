@@ -8,11 +8,11 @@ Sprout runs AI coding agents in dedicated tmux windows within each worktree's se
 
 ## Supported agents
 
-- **Codex** — `npm install -g @openai/codex`
-- **Aider** — `pip install aider-chat`
-- **Claude Code** — see [claude.ai/code](https://claude.ai/code)
-- **Gemini** — see Google's Gemini CLI docs
-- **Custom** — any CLI tool you configure
+- **Codex**: `npm install -g @openai/codex`
+- **Aider**: `pip install aider-chat`
+- **Claude Code**: see [claude.ai/code](https://claude.ai/code)
+- **Gemini**: see Google's Gemini CLI docs
+- **Custom**: any CLI tool you configure
 
 ## Configuration
 

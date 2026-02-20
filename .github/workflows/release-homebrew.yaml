@@ -19,7 +19,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       HOMEBREW_TAP_OWNER: ${{ vars.HOMEBREW_TAP_OWNER || github.repository_owner }}
-      HOMEBREW_TAP_NAME: ${{ vars.HOMEBREW_TAP_NAME || 'sprout' }}
+      HOMEBREW_TAP_NAME: ${{ vars.HOMEBREW_TAP_NAME || 'homebrew-sprout' }}
       HOMEBREW_TAP_BRANCH: ${{ vars.HOMEBREW_TAP_BRANCH || 'main' }}
       HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
     steps:

@@ -122,7 +122,7 @@ const config: Config = {
           ],
         },
       ],
-      copyright: `Copyright © ${new Date().getFullYear()} Sprout — open source git worktree manager.`,
+      copyright: `Copyright © ${new Date().getFullYear()} Sprout, open source git worktree manager.`,
     },
     prism: {
       theme: prismThemes.vsDark,

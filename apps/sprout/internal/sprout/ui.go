@@ -13,6 +13,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/charmbracelet/lipgloss"
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 )
@@ -148,11 +149,11 @@ const (
 )
 
 func paneBorderColor() tcell.Color {
-	return tcell.ColorDefault
+	return ColorToTcell(ThemeColorPrimary)
 }
 
 func paneFocusColor() tcell.Color {
-	return tcell.ColorDefault
+	return ColorToTcell(ThemeColorSecondary)
 }
 
 func ansiColor(code int) tcell.Color {
@@ -162,13 +163,13 @@ func ansiColor(code int) tcell.Color {
 func paletteLevelColor(level string) tcell.Color {
 	switch strings.ToUpper(strings.TrimSpace(level)) {
 	case "ERROR":
-		return ansiColor(ansiRed)
+		return tcell.ColorRed
 	case "WARN":
-		return ansiColor(ansiMagenta)
+		return tcell.ColorYellow
 	case "INFO":
-		return ansiColor(ansiBlue)
+		return ColorToTcell(ThemeColorSecondary)
 	default:
-		return ansiColor(ansiCyan)
+		return ColorToTcell(ThemeColorAccent)
 	}
 }
 
@@ -177,13 +178,13 @@ func applyTheme() {
 	tview.Styles.ContrastBackgroundColor = tcell.ColorDefault
 	tview.Styles.MoreContrastBackgroundColor = tcell.ColorDefault
 	tview.Styles.BorderColor = paneBorderColor()
-	tview.Styles.TitleColor = paneBorderColor()
-	tview.Styles.GraphicsColor = paneBorderColor()
+	tview.Styles.TitleColor = ColorToTcell(ThemeColorPrimary)
+	tview.Styles.GraphicsColor = ColorToTcell(ThemeColorAccent)
 	tview.Styles.PrimaryTextColor = tcell.ColorDefault
-	tview.Styles.SecondaryTextColor = ansiColor(ansiCyan)
-	tview.Styles.TertiaryTextColor = ansiColor(ansiBlue)
+	tview.Styles.SecondaryTextColor = ColorToTcell(ThemeColorSecondary)
+	tview.Styles.TertiaryTextColor = ColorToTcell(ThemeColorMuted)
 	tview.Styles.InverseTextColor = tcell.ColorDefault
-	tview.Styles.ContrastSecondaryTextColor = ansiColor(ansiRed)
+	tview.Styles.ContrastSecondaryTextColor = tcell.ColorRed
 
 	tview.Borders.HorizontalFocus = tview.Borders.Horizontal
 	tview.Borders.VerticalFocus = tview.Borders.Vertical
@@ -342,7 +343,7 @@ func newTUI(mgr *Manager, repoRoot string) *tuiState {
 		mgr:         mgr,
 		repoName:    mgr.RepoName(repoRoot),
 		repoRoot:    repoRoot,
-		app:         tview.NewApplication(),
+		app:         tview.NewApplication().EnableMouse(true),
 		pages:       pages,
 		table:       table,
 		statusPane:  statusPane,
@@ -361,7 +362,7 @@ func newTUI(mgr *Manager, repoRoot string) *tuiState {
 		agentPrompt: map[string]agentPromptState{},
 		paneSizes:   map[string]paneSize{},
 	}
-	u.focusables = []tview.Primitive{u.statusPane, u.detail, u.table}
+	u.focusables = []tview.Primitive{u.statusPane, u.detailPane, u.table}
 
 	table.SetSelectionChangedFunc(func(row, _ int) {
 		if row <= 0 {
@@ -389,7 +390,10 @@ func newTUI(mgr *Manager, repoRoot string) *tuiState {
 
 func (u *tuiState) handleKey(ev *tcell.EventKey) *tcell.EventKey {
 	mainFocus := u.isMainFocus()
-	if mainFocus && u.app.GetFocus() == u.detail {
+	focus := u.app.GetFocus()
+	inDetail := focus == u.detailPane || focus == u.detail || focus == u.diffFiles || focus == u.diffView
+
+	if mainFocus && inDetail {
 		return u.handleDetailBrowseKey(ev)
 	}
 
@@ -454,16 +458,13 @@ func (u *tuiState) handleKey(ev *tcell.EventKey) *tcell.EventKey {
 				u.setError("refresh failed: %v", err)
 			}
 			return nil
-		case 'g':
-			u.goCurrent()
-			return nil
 		case 'n':
 			u.showCreateModal()
 			return nil
-		case 'd':
+		case 'x':
 			u.showDeleteModal()
 			return nil
-		case 'x':
+		case 'd':
 			u.showDetachModal()
 			return nil
 		case '/':
@@ -532,10 +533,6 @@ func (u *tuiState) handleDetailBrowseKey(ev *tcell.EventKey) *tcell.EventKey {
 			u.cycleDetailTab(-1)
 		case 'l', ']':
 			u.cycleDetailTab(1)
-		case '1':
-			u.setDetailTab(detailTabAgent)
-		case '2':
-			u.setDetailTab(detailTabDiff)
 		}
 		return nil
 	default:
@@ -544,15 +541,10 @@ func (u *tuiState) handleDetailBrowseKey(ev *tcell.EventKey) *tcell.EventKey {
 }
 
 func (u *tuiState) handleDiffBrowseKey(ev *tcell.EventKey) *tcell.EventKey {
+	// Navigation logic
 	switch ev.Key() {
 	case tcell.KeyCtrlC:
 		u.app.Stop()
-		return nil
-	case tcell.KeyCtrlU:
-		u.scrollTextView(u.diffView, -10)
-		return nil
-	case tcell.KeyCtrlD:
-		u.scrollTextView(u.diffView, 10)
 		return nil
 	case tcell.KeyTAB:
 		u.cycleFocus(1)
@@ -560,7 +552,11 @@ func (u *tuiState) handleDiffBrowseKey(ev *tcell.EventKey) *tcell.EventKey {
 	case tcell.KeyBacktab:
 		u.cycleFocus(-1)
 		return nil
-	case tcell.KeyEnter:
+	case tcell.KeyCtrlU:
+		u.scrollTextView(u.diffView, -10)
+		return nil
+	case tcell.KeyCtrlD:
+		u.scrollTextView(u.diffView, 10)
 		return nil
 	case tcell.KeyUp:
 		u.moveDiffSelection(-1)
@@ -575,10 +571,10 @@ func (u *tuiState) handleDiffBrowseKey(ev *tcell.EventKey) *tcell.EventKey {
 		u.scrollTextView(u.diffView, 10)
 		return nil
 	case tcell.KeyHome:
-		u.diffView.ScrollToBeginning()
+		u.selectDiffFile(0)
 		return nil
 	case tcell.KeyEnd:
-		u.diffView.ScrollToEnd()
+		u.selectDiffFile(len(u.diffItems) - 1)
 		return nil
 	case tcell.KeyLeft:
 		u.cycleDetailTab(-1)
@@ -604,15 +600,10 @@ func (u *tuiState) handleDiffBrowseKey(ev *tcell.EventKey) *tcell.EventKey {
 			u.cycleDetailTab(-1)
 		case 'l', ']':
 			u.cycleDetailTab(1)
-		case '1':
-			u.setDetailTab(detailTabAgent)
-		case '2':
-			u.setDetailTab(detailTabDiff)
 		}
 		return nil
-	default:
-		return nil
 	}
+	return ev
 }
 
 func (u *tuiState) isMainFocus() bool {
@@ -621,6 +612,10 @@ func (u *tuiState) isMainFocus() bool {
 		if current == p {
 			return true
 		}
+	}
+	// Also check sub-focusables in diff pane or agent pane
+	if current == u.diffFiles || current == u.diffView || current == u.detail {
+		return true
 	}
 	return false
 }
@@ -671,14 +666,21 @@ func (u *tuiState) setDetailTab(tab detailTab) {
 		u.detailPages.HidePage("diff")
 		u.lastDetail = ""
 		u.detail.ScrollToEnd()
+		if u.app.GetFocus() == u.diffFiles || u.app.GetFocus() == u.diffView {
+			u.app.SetFocus(u.detail)
+		}
 	} else {
 		u.detailPages.ShowPage("diff")
 		u.detailPages.HidePage("agent")
 		u.lastDiff = ""
 		u.diffView.ScrollToBeginning()
+		if u.app.GetFocus() == u.detail {
+			u.app.SetFocus(u.diffFiles)
+		}
 	}
 	u.renderDetailTabs()
 	u.renderDetails()
+	u.updatePaneFocusStyles()
 	u.redrawFooter()
 }
 
@@ -711,7 +713,7 @@ func (u *tuiState) updatePaneFocusStyles() {
 		"[3]-Worktrees",
 	)
 	stylePane(
-		focus == u.detail,
+		focus == u.detailPane || focus == u.detail || focus == u.diffFiles || focus == u.diffView,
 		func(s string) { u.detailPane.SetTitle(s) },
 		func(c tcell.Color) { u.detailPane.SetBorderColor(c) },
 		func(c tcell.Color) { u.detailPane.SetTitleColor(c) },
@@ -869,15 +871,21 @@ func (u *tuiState) detailPaneTitle() string {
 }
 
 func (u *tuiState) renderDetailTabs() {
-	agent := "[cyan][::b] AGENT OUTPUT [::-][-]"
-	diff := "[cyan][::b] GIT DIFF [::-][-]"
+	agentStyle := lipgloss.NewStyle().Foreground(ColorCyan).Bold(true)
+	diffStyle := lipgloss.NewStyle().Foreground(ColorCyan).Bold(true)
+	separator := lipgloss.NewStyle().Foreground(ColorCyan).Render("|")
+
 	switch u.detailTab {
 	case detailTabDiff:
-		diff = "[::r][::b] GIT DIFF [::-][::-]"
+		diffStyle = diffStyle.Reverse(true)
 	default:
-		agent = "[::r][::b] AGENT OUTPUT [::-][::-]"
+		agentStyle = agentStyle.Reverse(true)
 	}
-	u.detailTabs.SetText(" " + agent + " [cyan]|[-] " + diff)
+
+	agent := agentStyle.Render(" AGENT OUTPUT ")
+	diff := diffStyle.Render(" GIT DIFF ")
+
+	u.detailTabs.SetText(tview.TranslateANSI(fmt.Sprintf(" %s %s %s", agent, separator, diff)))
 }
 
 func (u *tuiState) currentFilterLabel() string {
@@ -894,30 +902,49 @@ func (u *tuiState) renderStatusPane() {
 	}
 	selectedBranch := "(none)"
 	agentLabel := "n/a"
-	agentColor := "cyan"
+	agentColor := ColorCyan
 	if item := u.selectedItem(); item != nil {
 		selectedBranch = item.Branch
 		if strings.TrimSpace(selectedBranch) == "" {
 			selectedBranch = "(detached)"
 		}
-		agentLabel, agentColor = u.selectedAgentPromptLabel(item)
+		label, colorName := u.selectedAgentPromptLabel(item)
+		agentLabel = label
+		switch colorName {
+		case "green":
+			agentColor = ColorGreen
+		case "yellow":
+			agentColor = ColorEmerald // use emerald for busy
+		case "red":
+			agentColor = ColorRed
+		case "blue":
+			agentColor = ColorBlue
+		}
 	}
 	repo := u.repoName
+
+	// Render using lipgloss then translate to tview tags
+	check := lipgloss.NewStyle().Foreground(ColorGreen).Render("✓")
+	repoStr := lipgloss.NewStyle().Bold(true).Render(repo)
+	arrow := lipgloss.NewStyle().Foreground(ColorBlue).Render("->")
+	branchStr := lipgloss.NewStyle().Foreground(ColorGreen).Render(repoBranch)
+	selLabel := lipgloss.NewStyle().Foreground(ColorBlue).Render("selected:")
+	selBranch := lipgloss.NewStyle().Foreground(ColorGreen).Render(selectedBranch)
+	agLabel := lipgloss.NewStyle().Foreground(ColorBlue).Render("agent:")
+	agStatus := lipgloss.NewStyle().Foreground(agentColor).Render(agentLabel)
+
 	status := fmt.Sprintf(
-		"[green]✓[-] [::b]%s[::-] [cyan]->[-] [green]%s[-]  [cyan]selected:[-] [green]%s[-]  [cyan]agent:[-] [%s]%s[-]",
-		repo,
-		repoBranch,
-		selectedBranch,
-		agentColor,
-		agentLabel,
+		"%s %s %s %s  %s %s  %s %s",
+		check, repoStr, arrow, branchStr, selLabel, selBranch, agLabel, agStatus,
 	)
+
 	if u.app.GetFocus() == u.statusPane {
-		status = fmt.Sprintf(
-			"[::r] %s [::-]",
+		status = lipgloss.NewStyle().Reverse(true).Render(
 			fmt.Sprintf("✓ %s -> %s   selected: %s   agent: %s   (enter to switch repo)", repo, repoBranch, selectedBranch, agentLabel),
 		)
 	}
-	u.statusPane.SetText(status)
+
+	u.statusPane.SetText(tview.TranslateANSI(status))
 }
 
 func (u *tuiState) refreshRepoChoices() {
@@ -1047,7 +1074,7 @@ func (u *tuiState) renderTable() {
 	for col, h := range headers {
 		cell := tview.NewTableCell(h).
 			SetAttributes(tcell.AttrBold).
-			SetTextColor(ansiColor(ansiCyan)).
+			SetTextColor(ColorToTcell(ThemeColorPrimary)).
 			SetExpansion(1).
 			SetSelectable(false)
 		u.table.SetCell(0, col, cell)
@@ -1075,27 +1102,27 @@ func (u *tuiState) renderTable() {
 			switch col {
 			case 0:
 				if val != "" {
-					cell.SetTextColor(ansiColor(ansiMagenta))
+					cell.SetTextColor(ColorToTcell(ThemeColorAccent))
 				}
 			case 2:
 				if status == "dirty" {
-					cell.SetTextColor(ansiColor(ansiRed))
+					cell.SetTextColor(tcell.ColorRed)
 				} else {
-					cell.SetTextColor(ansiColor(ansiGreen))
+					cell.SetTextColor(tcell.ColorGreen)
 				}
 			case 3:
 				if val == "yes" {
-					cell.SetTextColor(ansiColor(ansiGreen))
+					cell.SetTextColor(tcell.ColorGreen)
 				} else if val == "no" {
-					cell.SetTextColor(ansiColor(ansiRed))
+					cell.SetTextColor(tcell.ColorRed)
 				} else {
-					cell.SetTextColor(ansiColor(ansiCyan))
+					cell.SetTextColor(ColorToTcell(ThemeColorSecondary))
 				}
 			case 4:
 				cell.SetTextColor(tableAgentColor(val))
 			}
 			if item.Current && col == 1 {
-				cell.SetTextColor(ansiColor(ansiBlue))
+				cell.SetTextColor(ColorToTcell(ThemeColorAccent))
 				cell.SetAttributes(tcell.AttrBold)
 			}
 			if status == "dirty" && col == 2 {
@@ -1202,13 +1229,13 @@ func (u *tuiState) tableAgentLabel(item Worktree) string {
 func tableAgentColor(label string) tcell.Color {
 	switch label {
 	case "ready", "yes":
-		return ansiColor(ansiGreen)
+		return tcell.ColorGreen
 	case "busy", "running":
-		return ansiColor(ansiYellow)
+		return tcell.ColorYellow
 	case "no", "offline":
-		return ansiColor(ansiRed)
+		return tcell.ColorRed
 	default:
-		return ansiColor(ansiCyan)
+		return ColorToTcell(ThemeColorSecondary)
 	}
 }
 
@@ -1343,7 +1370,7 @@ func (u *tuiState) renderAgentDetail() {
 		u.setAgentPromptState(item, agentPromptUnknown)
 		u.setDetailText(
 			"Agent pane is not available for this worktree.\n\n"+
-				"Press enter or g on the worktree list to attach.\n"+
+				"Press enter on the worktree list to attach.\n"+
 				"A tmux session will open with your configured session tools.",
 			false,
 		)
@@ -1705,7 +1732,7 @@ func (u *tuiState) scrollTextView(view *tview.TextView, delta int) {
 
 func (u *tuiState) worktreeGraphic(selectedPath string) string {
 	if len(u.items) == 0 {
-		return "[magenta](no worktrees)[-]"
+		return lipgloss.NewStyle().Foreground(ColorPurple).Render("(no worktrees)")
 	}
 
 	ordered := append([]Worktree(nil), u.items...)
@@ -1723,9 +1750,10 @@ func (u *tuiState) worktreeGraphic(selectedPath string) string {
 	if strings.TrimSpace(u.repoSlug) != "" {
 		repoLabel = u.repoSlug
 	}
+
 	lines := []string{
-		fmt.Sprintf("[::b][green]%s[-][::-]", repoLabel),
-		"[cyan]│[-]",
+		lipgloss.NewStyle().Bold(true).Foreground(ColorGreen).Render(repoLabel),
+		lipgloss.NewStyle().Foreground(ColorCyan).Render("│"),
 	}
 
 	for i, wt := range ordered {
@@ -1733,80 +1761,75 @@ func (u *tuiState) worktreeGraphic(selectedPath string) string {
 		if branch == "" {
 			branch = "detached"
 		}
-		state := "clean"
-		if wt.Dirty {
-			state = "dirty"
-		}
 
-		arm := "├─"
-		stem := "│ "
+		arm := lipgloss.NewStyle().Foreground(ColorCyan).Render("├─")
+		stem := lipgloss.NewStyle().Foreground(ColorCyan).Render("│ ")
 		if i == len(ordered)-1 {
-			arm = "└─"
+			arm = lipgloss.NewStyle().Foreground(ColorCyan).Render("└─")
 			stem = "  "
 		}
 
 		marker := "○"
-		markerColor := "cyan"
+		markerColor := ColorCyan
 		if wt.Current {
 			marker = "●"
-			markerColor = "green"
+			markerColor = ColorGreen
 		}
 		if wt.Path == selectedPath {
 			marker = "◆"
-			markerColor = "blue"
+			markerColor = ColorBlue
 		}
 
-		branchColor := "cyan"
+		branchColor := ColorCyan
 		if wt.Dirty {
-			branchColor = "red"
+			branchColor = ColorRed
 		} else if wt.Current {
-			branchColor = "green"
+			branchColor = ColorGreen
 		}
 
-		stateColor := "green"
+		state := "clean"
+		stateColor := ColorGreen
 		if wt.Dirty {
-			stateColor = "red"
+			state = "dirty"
+			stateColor = ColorRed
 		}
 
-		tmuxState := "[cyan]·[-]"
+		tmuxState := lipgloss.NewStyle().Foreground(ColorCyan).Render("·")
 		switch wt.TmuxState {
 		case "yes":
-			tmuxState = "[green]●[-]"
+			tmuxState = lipgloss.NewStyle().Foreground(ColorGreen).Render("●")
 		case "no":
-			tmuxState = "[red]○[-]"
+			tmuxState = lipgloss.NewStyle().Foreground(ColorRed).Render("○")
 		}
-		agentState := "[cyan]·[-]"
+
+		agentState := lipgloss.NewStyle().Foreground(ColorCyan).Render("·")
 		switch wt.AgentState {
 		case "yes":
-			agentState = "[green]●[-]"
+			agentState = lipgloss.NewStyle().Foreground(ColorGreen).Render("●")
 		case "no":
-			agentState = "[red]○[-]"
+			agentState = lipgloss.NewStyle().Foreground(ColorRed).Render("○")
 		}
 
-		lines = append(
-			lines,
-			fmt.Sprintf(
-				"[cyan]%s[-][%s]%s[-] [::b][%s]%s[-][::-] [%s](%s)[-] [cyan]tmux[-]:%s [cyan]agent[-]:%s",
-				arm,
-				markerColor,
-				marker,
-				branchColor,
-				truncate(branch, 42),
-				stateColor,
-				state,
-				tmuxState,
-				agentState,
-			),
+		branchText := lipgloss.NewStyle().Bold(true).Foreground(branchColor).Render(truncate(branch, 42))
+		stateText := lipgloss.NewStyle().Foreground(stateColor).Render("(" + state + ")")
+		markerText := lipgloss.NewStyle().Foreground(markerColor).Render(marker)
+
+		line := fmt.Sprintf(
+			"%s%s %s %s tmux:%s agent:%s",
+			arm, markerText, branchText, stateText, tmuxState, agentState,
 		)
+		lines = append(lines, line)
 
-		pathColor := "magenta"
+		pathColor := ColorPurple
 		if wt.Path == selectedPath {
-			pathColor = "blue"
+			pathColor = ColorBlue
 		}
-		lines = append(lines, fmt.Sprintf("[cyan]%s└─[-] [%s]%s[-]", stem, pathColor, truncatePath(wt.Path, 74)))
+		pathArm := lipgloss.NewStyle().Foreground(ColorCyan).Render("└─")
+		pathText := lipgloss.NewStyle().Foreground(pathColor).Render(truncatePath(wt.Path, 74))
+		lines = append(lines, fmt.Sprintf("%s%s %s", stem, pathArm, pathText))
 	}
 
-	return strings.Join(lines, "\n")
+	return tview.TranslateANSI(strings.Join(lines, "\n"))
 }
 
 func (u *tuiState) setStatus(format string, args ...any) {
@@ -1828,17 +1851,18 @@ func (u *tuiState) setError(format string, args ...any) {
 func (u *tuiState) footerKeymap() string {
 	base := "[::b]tab[::-] pane | [::b]r[::-] refresh | [::b]?[::-] help | [::b]q[::-] quit"
 	focus := u.app.GetFocus()
+	inDetail := focus == u.detailPane || focus == u.detail || focus == u.diffFiles || focus == u.diffView
 
 	switch {
 	case focus == u.statusPane:
 		return "[::b]enter[::-] repos | " + base
 	case focus == u.table:
-		return "[::b]j/k[::-] move | [::b]enter/g[::-] attach | [::b]x[::-] detach | [::b]n[::-] new | [::b]d[::-] remove | [::b]/[::-] filter | " + base
-	case focus == u.detail:
+		return "[::b]j/k[::-] move | [::b]enter[::-] attach | [::b]d[::-] detach | [::b]n[::-] new | [::b]x[::-] remove | [::b]/[::-] filter | " + base
+	case inDetail:
 		if u.detailTab == detailTabDiff {
-			return "[::b]j/k[::-] files | [::b]ctrl+u/ctrl+d[::-] patch | [::b]h/l[::-] tab | " + base
+			return "[::b]j/k[::-] files | [::b]J/K[::-] patch scroll | [::b]h/l[::-] tab | " + base
 		}
-		return "[::b]j/k/pgup/pgdn[::-] scroll | [::b]h/l[::-] tab | [::b]1/2[::-] tab | " + base
+		return "[::b]j/k/pgup/pgdn[::-] scroll | [::b]h/l/[[/]][::-] tab | " + base
 	default:
 		return "[::b]tab[::-] cycle modal focus | [::b]esc[::-] close modal"
 	}
@@ -1865,10 +1889,31 @@ func (u *tuiState) redrawFooter() {
 	if strings.TrimSpace(message) == "" {
 		message = "ready"
 	}
-	u.footerLeft.SetTextColor(paletteLevelColor(level))
-	u.footerLeft.SetText(fmt.Sprintf("╰─ %s  %s: %s", u.footerKeymap(), level, message))
-	u.footerRight.SetTextColor(ansiColor(ansiCyan))
-	u.footerRight.SetText(fmt.Sprintf("─ v%s ╯", Version))
+
+	levelColor := ColorCyan
+	switch level {
+	case "ERROR":
+		levelColor = ColorRed
+	case "WARN":
+		levelColor = ColorPurple
+	case "INFO":
+		levelColor = ColorBlue
+	}
+
+	keymapStyle := lipgloss.NewStyle().Foreground(ColorGray)
+	levelStyle := lipgloss.NewStyle().Foreground(levelColor).Bold(true)
+	msgStyle := lipgloss.NewStyle()
+	versionStyle := lipgloss.NewStyle().Foreground(ColorCyan)
+
+	left := fmt.Sprintf("╰─ %s  %s: %s",
+		keymapStyle.Render(u.footerKeymap()),
+		levelStyle.Render(level),
+		msgStyle.Render(message),
+	)
+	right := fmt.Sprintf("─ %s ╯", versionStyle.Render("v"+Version))
+
+	u.footerLeft.SetText(tview.TranslateANSI(left))
+	u.footerRight.SetText(tview.TranslateANSI(right))
 }
 
 func (u *tuiState) showModal(name string, p tview.Primitive, width, height int) {
@@ -1883,80 +1928,116 @@ func (u *tuiState) closeModal(name string) {
 	u.updatePaneFocusStyles()
 }
 
-func (u *tuiState) showProgressModal(name, title, message string) (func(string), func()) {
-	action := tview.NewTextView().
-		SetDynamicColors(true).
-		SetWrap(false)
-	action.SetBackgroundColor(tcell.ColorDefault)
-	action.SetTextColor(ansiColor(ansiCyan))
-	actionLabel := strings.TrimSpace(title)
-	if actionLabel == "" {
-		actionLabel = "Working"
-	}
-	action.SetText(" " + actionLabel)
+func (u *tuiState) showProgressModal(name, title string, totalSteps int) (func(string), func()) {
+	const barWidth = 44
+	const modalWidth = 64
 
-	body := tview.NewTextView().
-		SetDynamicColors(true).
-		SetWrap(false)
-	body.SetBackgroundColor(tcell.ColorDefault)
-	body.SetTextColor(tcell.ColorDefault)
+	titleView := tview.NewTextView().SetDynamicColors(true).SetWrap(false)
+	titleView.SetBackgroundColor(tcell.ColorDefault)
+	titleStyle := lipgloss.NewStyle().Foreground(ThemeColorPrimary).Bold(true)
+	titleView.SetText(tview.TranslateANSI(" " + titleStyle.Render(strings.TrimSpace(title))))
+
+	stepView := tview.NewTextView().SetDynamicColors(true).SetWrap(false)
+	stepView.SetBackgroundColor(tcell.ColorDefault)
+	stepView.SetTextColor(tcell.ColorDefault)
+
+	barView := tview.NewTextView().SetDynamicColors(true).SetWrap(false)
+	barView.SetBackgroundColor(tcell.ColorDefault)
 
 	layout := tview.NewFlex().
 		SetDirection(tview.FlexRow).
-		AddItem(action, 1, 0, false).
-		AddItem(body, 1, 0, false)
+		AddItem(titleView, 1, 0, false).
+		AddItem(nil, 1, 0, false).
+		AddItem(stepView, 1, 0, false).
+		AddItem(barView, 1, 0, false)
 	layout.SetBackgroundColor(tcell.ColorDefault)
 
-	u.showModal(name, layout, 64, 5)
+	u.showModal(name, layout, modalWidth, 7)
 	u.app.SetFocus(layout)
 
-	frames := []string{"|", "/", "-", "\\"}
-	msg := strings.TrimSpace(message)
-	if msg == "" {
-		msg = "Working..."
-	}
+	spinChars := []string{"|", "/", "-", "\\"}
 
 	var mu sync.Mutex
-	render := func(frame int) {
+	var step int
+	label := "Working..."
+	var frame int
+
+	render := func() {
 		mu.Lock()
-		current := msg
+		s, l, f := step, label, frame
 		mu.Unlock()
-		body.SetText(fmt.Sprintf("[%s] %s", frames[frame%len(frames)], current))
+
+		pct := 0.0
+		if totalSteps > 0 && s > 0 {
+			pct = float64(s) / float64(totalSteps)
+			if pct > 1.0 {
+				pct = 1.0
+			}
+		}
+
+		filled := int(float64(barWidth) * pct)
+		if filled > barWidth {
+			filled = barWidth
+		}
+		empty := barWidth - filled
+
+		spin := spinChars[f%len(spinChars)]
+		spinStyle := lipgloss.NewStyle().Foreground(ThemeColorPrimary)
+		stepView.SetText(tview.TranslateANSI(fmt.Sprintf(" %s %s", spinStyle.Render(spin), l)))
+
+		filledStyle := lipgloss.NewStyle().Foreground(ThemeColorPrimary)
+		emptyStyle := lipgloss.NewStyle().Foreground(ColorGray)
+		pctStyle := lipgloss.NewStyle().Foreground(ThemeColorPrimary).Bold(true)
+
+		var pctText string
+		if s == 0 {
+			pctText = pctStyle.Render("  --%")
+		} else {
+			pctText = pctStyle.Render(fmt.Sprintf(" %3d%%", int(pct*100)))
+		}
+
+		barText := " " +
+			filledStyle.Render(strings.Repeat("█", filled)) +
+			emptyStyle.Render(strings.Repeat("░", empty)) +
+			pctText
+		barView.SetText(tview.TranslateANSI(barText))
 	}
-	render(0)
+	render()
 
 	done := make(chan struct{})
 	go func() {
 		ticker := time.NewTicker(120 * time.Millisecond)
 		defer ticker.Stop()
-		frame := 1
 		for {
 			select {
 			case <-done:
 				return
 			case <-ticker.C:
-				f := frame
+				mu.Lock()
 				frame++
+				mu.Unlock()
 				u.app.QueueUpdateDraw(func() {
-					render(f)
+					render()
 				})
 			}
 		}
 	}()
 
-	update := func(next string) {
-		trimmed := strings.TrimSpace(next)
-		if trimmed == "" {
-			return
-		}
+	advance := func(next string) {
 		mu.Lock()
-		msg = trimmed
+		step++
+		if strings.TrimSpace(next) != "" {
+			label = strings.TrimSpace(next)
+		}
 		mu.Unlock()
+		u.app.QueueUpdateDraw(func() {
+			render()
+		})
 	}
 	stop := func() {
 		close(done)
 	}
-	return update, stop
+	return advance, stop
 }
 
 func centered(width, height int, p tview.Primitive) tview.Primitive {
@@ -2207,6 +2288,10 @@ func (u *tuiState) showRepoSwitchModal() {
 		}
 		if ev.Key() == tcell.KeyRune {
 			switch ev.Rune() {
+			case 'c':
+				u.closeModal("repos")
+				u.setInfo("repo switch canceled")
+				return nil
 			case 'j':
 				row, _ := table.GetSelection()
 				if row < cancelRow {
@@ -2286,7 +2371,7 @@ func (u *tuiState) showFilterModal() {
 
 	applyBtn := modalButton("<a> Apply", applyFilter)
 	clearBtn := modalButton("<l> Clear", clearFilter)
-	cancelBtn := modalButton("<x> Cancel", cancel)
+	cancelBtn := modalButton("<c> Cancel", cancel)
 
 	row := tview.NewFlex().
 		AddItem(nil, 0, 1, false).
@@ -2310,7 +2395,7 @@ func (u *tuiState) showFilterModal() {
 	capture := modalCapture(u.app, focusables, cancel, map[rune]func(){
 		'a': applyFilter,
 		'l': clearFilter,
-		'x': cancel,
+		'c': cancel,
 	})
 	for _, p := range focusables {
 		setPrimitiveInputCapture(p, capture)
@@ -2326,50 +2411,176 @@ func (u *tuiState) showFilterModal() {
 }
 
 func (u *tuiState) showCreateModal() {
-	branchField := tview.NewInputField()
-	styleModalInputField(branchField)
+	repoRoot, err := u.mgr.RequireRepo()
+	if err != nil {
+		u.setError("not in a git repo: %v", err)
+		return
+	}
+
+	allBranches, _ := u.mgr.ListBranches(repoRoot)
 	creating := false
 
-	create := func() {
+	type branchRow struct {
+		name     string
+		isNew    bool
+		isRemote bool
+	}
+	var displayRows []branchRow
+
+	input := tview.NewInputField()
+	styleModalInputField(input)
+	input.SetPlaceholder("type to filter or enter a new branch name")
+	input.SetPlaceholderTextColor(paneBorderColor())
+
+	branchTable := tview.NewTable().
+		SetSelectable(true, false).
+		SetFixed(1, 0).
+		SetBorders(false)
+	branchTable.SetSeparator(' ')
+	branchTable.SetBackgroundColor(tcell.ColorDefault)
+	branchTable.SetSelectedStyle(tcell.StyleDefault.Foreground(tcell.ColorDefault).Background(tcell.ColorDefault).Reverse(true))
+	branchTable.SetBorder(true)
+	branchTable.SetBorderColor(paneBorderColor())
+
+	counter := tview.NewTextView().
+		SetDynamicColors(true).
+		SetWrap(false).
+		SetTextAlign(tview.AlignRight)
+	counter.SetTextColor(paneBorderColor())
+	counter.SetBackgroundColor(tcell.ColorDefault)
+
+	hints := tview.NewTextView().SetDynamicColors(true).SetWrap(false)
+	hints.SetTextColor(paneBorderColor())
+	hints.SetBackgroundColor(tcell.ColorDefault)
+	hints.SetText(" ↑↓/jk navigate  enter select  c/esc cancel")
+
+	updateCounter := func(dataIdx int) {
+		total := len(displayRows)
+		if total == 0 {
+			counter.SetText("")
+			return
+		}
+		n := dataIdx + 1
+		if n < 1 {
+			n = 1
+		}
+		counter.SetText(fmt.Sprintf("%d of %d  ", n, total))
+	}
+
+	rebuildTable := func(query string) {
+		displayRows = nil
+		branchTable.Clear()
+
+		branchTable.SetCell(0, 0, tview.NewTableCell("").SetSelectable(false))
+		branchTable.SetCell(0, 1, tview.NewTableCell("BRANCH").
+			SetTextColor(ansiColor(ansiCyan)).SetSelectable(false).SetExpansion(1))
+		branchTable.SetCell(0, 2, tview.NewTableCell("").SetSelectable(false))
+
+		rowIdx := 1
+		lq := strings.ToLower(strings.TrimSpace(query))
+
+		// Synthetic "new branch" entry when query doesn't exactly match any existing branch
+		if lq != "" {
+			exactMatch := false
+			for _, b := range allBranches {
+				if strings.ToLower(b.Name) == lq {
+					exactMatch = true
+					break
+				}
+			}
+			if !exactMatch {
+				name := strings.TrimSpace(query)
+				branchTable.SetCell(rowIdx, 0, tview.NewTableCell("✦").SetTextColor(ansiColor(ansiGreen)).SetSelectable(true))
+				branchTable.SetCell(rowIdx, 1, tview.NewTableCell(name).SetTextColor(tcell.ColorDefault).SetSelectable(true).SetExpansion(1))
+				branchTable.SetCell(rowIdx, 2, tview.NewTableCell("new").SetTextColor(paneBorderColor()).SetSelectable(true))
+				displayRows = append(displayRows, branchRow{name: name, isNew: true})
+				rowIdx++
+			}
+		}
+
+		for _, b := range allBranches {
+			if lq != "" && !strings.Contains(strings.ToLower(b.Name), lq) {
+				continue
+			}
+			typeLabel := ""
+			typeColor := paneBorderColor()
+			if b.Remote {
+				typeLabel = "remote"
+				typeColor = ansiColor(ansiMagenta)
+			}
+			branchTable.SetCell(rowIdx, 0, tview.NewTableCell("").SetSelectable(true))
+			branchTable.SetCell(rowIdx, 1, tview.NewTableCell(b.Name).SetTextColor(tcell.ColorDefault).SetSelectable(true).SetExpansion(1))
+			branchTable.SetCell(rowIdx, 2, tview.NewTableCell(typeLabel).SetTextColor(typeColor).SetSelectable(true))
+			displayRows = append(displayRows, branchRow{name: b.Name, isRemote: b.Remote})
+			rowIdx++
+		}
+
+		if len(displayRows) == 0 && lq == "" {
+			branchTable.SetCell(1, 0, tview.NewTableCell(""))
+			branchTable.SetCell(1, 1, tview.NewTableCell("no branches available — type a name to create one").
+				SetTextColor(paneBorderColor()).SetSelectable(false).SetExpansion(1))
+			branchTable.SetCell(1, 2, tview.NewTableCell(""))
+		}
+
+		if len(displayRows) > 0 {
+			branchTable.Select(1, 0)
+			updateCounter(0)
+		} else {
+			counter.SetText("")
+		}
+	}
+
+	doCreate := func(branch string, fromExisting bool) {
 		if creating {
 			return
 		}
-		branchValue := strings.TrimSpace(branchField.GetText())
-		if branchValue == "" {
-			u.setWarn("branch is required")
+		branch = strings.TrimSpace(branch)
+		if branch == "" {
+			u.setWarn("branch name is required")
 			return
 		}
 		creating = true
-
 		u.closeModal("create")
-		updateProgress, stopProgress := u.showProgressModal("create-progress", "Create Worktree", "Creating worktree...")
 
-		go func(branch string) {
+		totalSteps := 2 // create + refresh
+		if u.mgr.Cfg.AutoLaunch {
+			totalSteps++
+		}
+		if u.mgr.Cfg.AutoStartAgent {
+			totalSteps++
+		}
+		advance, stopProgress := u.showProgressModal("create-progress", "Create Worktree", totalSteps)
+
+		go func(branch string, fromExisting bool) {
 			var path string
 			var createErr error
 			warnings := []string{}
 			var refreshed []Worktree
 			var refreshErr error
 
-			debugLogf("ui_create start branch=%q auto_launch=%t auto_start_agent=%t", branch, u.mgr.Cfg.AutoLaunch, u.mgr.Cfg.AutoStartAgent)
-			updateProgress("Creating branch and worktree...")
-			_, path, createErr = u.mgr.NewWorktree(NewOptions{
-				Branch: branch,
-				Launch: false,
-			})
+			var opts NewOptions
+			if fromExisting {
+				opts = NewOptions{FromBranch: branch, Launch: false}
+			} else {
+				opts = NewOptions{Branch: branch, Launch: false}
+			}
+
+			debugLogf("ui_create start branch=%q existing=%t auto_launch=%t auto_start_agent=%t", branch, fromExisting, u.mgr.Cfg.AutoLaunch, u.mgr.Cfg.AutoStartAgent)
+			advance("Creating worktree...")
+			_, path, createErr = u.mgr.NewWorktree(opts)
 			if createErr != nil {
 				debugLogf("ui_create new_worktree failed branch=%q: %v", branch, createErr)
 			}
 
 			if createErr == nil && u.mgr.Cfg.AutoLaunch {
-				updateProgress("Launching tmux tools...")
+				advance("Launching tmux tools...")
 				if _, err := u.mgr.Launch(LaunchOptions{Target: path, NoAttach: true}); err != nil {
 					debugLogf("ui_create auto_launch failed path=%q: %v", path, err)
 					warnings = append(warnings, fmt.Sprintf("launch failed: %v", err))
 				}
 			}
 			if createErr == nil && u.mgr.Cfg.AutoStartAgent {
-				updateProgress("Starting agent...")
+				advance("Starting agent...")
 				if _, _, err := u.mgr.StartAgent(AgentOptions{Target: path, Attach: false}); err != nil {
 					debugLogf("ui_create auto_agent failed path=%q: %v", path, err)
 					warnings = append(warnings, fmt.Sprintf("agent start failed: %v", err))
@@ -2377,7 +2588,7 @@ func (u *tuiState) showCreateModal() {
 			}
 
 			if createErr == nil {
-				updateProgress("Refreshing worktrees...")
+				advance("Refreshing worktrees...")
 				refreshed, refreshErr = u.mgr.ListWorktrees()
 				if refreshErr != nil {
 					debugLogf("ui_create refresh failed path=%q: %v", path, refreshErr)
@@ -2415,36 +2626,125 @@ func (u *tuiState) showCreateModal() {
 				debugLogf("ui_create success path=%q warnings=%d", path, len(warnings))
 				u.setInfo("created: %s", path)
 			})
-		}(branchValue)
+		}(branch, fromExisting)
 	}
+
+	selectCurrentRow := func() {
+		row, _ := branchTable.GetSelection()
+		if row < 1 || row-1 >= len(displayRows) {
+			return
+		}
+		r := displayRows[row-1]
+		doCreate(r.name, !r.isNew)
+	}
+
 	cancel := func() {
 		u.closeModal("create")
 	}
+
+	input.SetChangedFunc(func(text string) {
+		rebuildTable(text)
+	})
+	input.SetInputCapture(func(ev *tcell.EventKey) *tcell.EventKey {
+		switch ev.Key() {
+		case tcell.KeyEscape:
+			cancel()
+			return nil
+		case tcell.KeyEnter:
+			if len(displayRows) > 0 {
+				r := displayRows[0]
+				doCreate(r.name, !r.isNew)
+			} else {
+				doCreate(strings.TrimSpace(input.GetText()), false)
+			}
+			return nil
+		case tcell.KeyDown:
+			if len(displayRows) > 0 {
+				u.app.SetFocus(branchTable)
+				branchTable.Select(1, 0)
+				updateCounter(0)
+			}
+			return nil
+		case tcell.KeyTab:
+			if len(displayRows) > 0 {
+				u.app.SetFocus(branchTable)
+				branchTable.Select(1, 0)
+				updateCounter(0)
+			}
+			return nil
+		}
+		return ev
+	})
+
+	branchTable.SetSelectionChangedFunc(func(row, col int) {
+		if row >= 1 {
+			updateCounter(row - 1)
+		}
+	})
+	branchTable.SetSelectedFunc(func(row, col int) {
+		selectCurrentRow()
+	})
+	branchTable.SetInputCapture(func(ev *tcell.EventKey) *tcell.EventKey {
+		switch ev.Key() {
+		case tcell.KeyEscape:
+			cancel()
+			return nil
+		case tcell.KeyEnter:
+			selectCurrentRow()
+			return nil
+		case tcell.KeyUp:
+			row, _ := branchTable.GetSelection()
+			if row <= 1 {
+				u.app.SetFocus(input)
+				return nil
+			}
+		case tcell.KeyBacktab:
+			u.app.SetFocus(input)
+			return nil
+		}
+		if ev.Key() == tcell.KeyRune {
+			switch ev.Rune() {
+			case 'c':
+				cancel()
+				return nil
+			case 'j':
+				row, _ := branchTable.GetSelection()
+				if row < branchTable.GetRowCount()-1 {
+					branchTable.Select(row+1, 0)
+				}
+				return nil
+			case 'k':
+				row, _ := branchTable.GetSelection()
+				if row > 1 {
+					branchTable.Select(row-1, 0)
+				} else {
+					u.app.SetFocus(input)
+				}
+				return nil
+			}
+		}
+		return ev
+	})
+
+	footer := tview.NewFlex().
+		AddItem(hints, 0, 1, false).
+		AddItem(counter, 12, 0, false)
+	footer.SetBackgroundColor(tcell.ColorDefault)
 
 	layout := tview.NewFlex().
 		SetDirection(tview.FlexRow).
 		AddItem(modalHeader("Create Worktree"), 1, 0, false).
 		AddItem(nil, 1, 0, false).
-		AddItem(modalFieldBox("Branch Name", branchField), 3, 0, true)
+		AddItem(modalFieldBox("Branch", input), 3, 0, false).
+		AddItem(nil, 1, 0, false).
+		AddItem(branchTable, 0, 1, false).
+		AddItem(nil, 1, 0, false).
+		AddItem(footer, 1, 0, false)
 	layout.SetBackgroundColor(tcell.ColorDefault)
 
-	focusables := []tview.Primitive{branchField}
-	capture := modalCapture(u.app, focusables, cancel, nil)
-	branchField.SetInputCapture(func(ev *tcell.EventKey) *tcell.EventKey {
-		if ev.Key() == tcell.KeyEnter {
-			create()
-			return nil
-		}
-		return capture(ev)
-	})
-	branchField.SetDoneFunc(func(key tcell.Key) {
-		if key == tcell.KeyEnter {
-			create()
-		}
-	})
-
-	u.showModal("create", layout, 86, 9)
-	u.app.SetFocus(branchField)
+	rebuildTable("")
+	u.showModal("create", layout, 86, 24)
+	u.app.SetFocus(input)
 }
 
 func (u *tuiState) selectPath(path string) {
@@ -2470,26 +2770,56 @@ func (u *tuiState) showDeleteModal() {
 		branch = filepath.Base(item.Path)
 	}
 
+	removing := false
 	remove := func() {
-		_, warnings, err := u.mgr.Remove(RemoveOptions{
-			Target:       item.Path,
-			Force:        item.Dirty,
-			DeleteBranch: false,
-		})
-		if err != nil {
-			u.setError("remove failed: %v", err)
+		if removing {
 			return
 		}
+		removing = true
 		u.closeModal("delete")
-		if err := u.refresh(); err != nil {
-			u.setWarn("removed, but refresh failed: %v", err)
-			return
-		}
-		if len(warnings) > 0 {
-			u.setWarn("removed with warning: %s", warnings[0])
-		} else {
-			u.setInfo("removed: %s", branch)
-		}
+		advance, stopProgress := u.showProgressModal("delete-progress", "Remove Worktree", 2)
+
+		go func() {
+			advance("Removing worktree...")
+			_, warnings, removeErr := u.mgr.Remove(RemoveOptions{
+				Target:       item.Path,
+				Force:        item.Dirty,
+				DeleteBranch: false,
+			})
+
+			var refreshed []Worktree
+			var refreshErr error
+			if removeErr == nil {
+				advance("Refreshing worktrees...")
+				refreshed, refreshErr = u.mgr.ListWorktrees()
+			}
+
+			u.app.QueueUpdateDraw(func() {
+				stopProgress()
+				u.closeModal("delete-progress")
+
+				if removeErr != nil {
+					u.setError("remove failed: %v", removeErr)
+					return
+				}
+
+				if refreshErr == nil {
+					u.refreshRepoChoices()
+					u.items = refreshed
+					u.applyFilter()
+					u.renderTable()
+					u.renderTableMeta()
+					u.renderDetails()
+					u.renderStatusPane()
+				}
+
+				if len(warnings) > 0 {
+					u.setWarn("removed with warning: %s", warnings[0])
+				} else {
+					u.setInfo("removed: %s", branch)
+				}
+			})
+		}()
 	}
 	cancel := func() {
 		u.closeModal("delete")
@@ -2524,7 +2854,7 @@ func (u *tuiState) showDeleteModal() {
 	options.SetBorderColor(paneBorderColor())
 	options.SetCell(0, 0, tview.NewTableCell("r").SetTextColor(ansiColor(ansiCyan)).SetExpansion(1))
 	options.SetCell(0, 1, tview.NewTableCell("Remove worktree").SetTextColor(tcell.ColorDefault).SetExpansion(1))
-	options.SetCell(1, 0, tview.NewTableCell("x").SetTextColor(ansiColor(ansiCyan)).SetExpansion(1))
+	options.SetCell(1, 0, tview.NewTableCell("c").SetTextColor(ansiColor(ansiCyan)).SetExpansion(1))
 	options.SetCell(1, 1, tview.NewTableCell("Cancel").SetTextColor(tcell.ColorDefault).SetExpansion(1))
 
 	selectOption := func(row int) {
@@ -2553,7 +2883,7 @@ func (u *tuiState) showDeleteModal() {
 			case 'r':
 				remove()
 				return nil
-			case 'x':
+			case 'c':
 				cancel()
 				return nil
 			case 'j':
@@ -2718,27 +3048,53 @@ func (u *tuiState) showHelpModal() {
 		What  string
 		Short string
 	}
-	bindings := []binding{
+
+	focus := u.app.GetFocus()
+	inDetail := focus == u.detailPane || focus == u.detail || focus == u.diffFiles || focus == u.diffView
+	inTable := focus == u.table
+
+	var bindings []binding
+	var title string
+
+	// General bindings (always relevant)
+	general := []binding{
 		{Key: "tab / shift+tab", What: "Switch pane focus", Short: "Cycle focus across status, details, and worktrees panes."},
-		{Key: "j / k", What: "Move selection / scroll pane", Short: "Move worktree selection, or scroll when details is focused."},
-		{Key: "up / down", What: "Move selection / scroll pane", Short: "Arrow-key alternative for worktree navigation and pane scrolling."},
-		{Key: "pgup / pgdn", What: "Scroll details", Short: "Scroll faster through output; in diff tab this scrolls the patch pane."},
-		{Key: "ctrl+u / ctrl+d in diff tab", What: "Scroll patch", Short: "Scroll the selected file patch up/down while staying in the diff inspector."},
-		{Key: "h / l, left / right", What: "Switch detail tab", Short: "Switch between AGENT OUTPUT and GIT DIFF tabs in details pane."},
-		{Key: "1 / 2", What: "Jump detail tab", Short: "Jump directly to AGENT OUTPUT (1) or GIT DIFF (2)."},
-		{Key: "j / k in diff tab", What: "Select changed file", Short: "Move through changed files on the left; right pane updates to selected file diff."},
-		{Key: "agent ready indicator", What: "Watch readiness", Short: "Status bar shows agent state (running/busy/ready), and footer notifies when selected agent becomes ready."},
-		{Key: "enter", What: "Attach to worktree", Short: "From worktree list, open/focus tmux session with configured tool windows."},
-		{Key: "g", What: "Attach to worktree", Short: "Shortcut to attach/focus the selected worktree tmux session."},
-		{Key: "x", What: "Detach from worktree", Short: "Stop the selected worktree tmux session without removing the worktree itself."},
-		{Key: "n", What: "Create worktree", Short: "Open create-worktree form and create a new branch + worktree."},
-		{Key: "d", What: "Delete worktree", Short: "Open removal confirmation form for the selected worktree."},
-		{Key: "/", What: "Filter worktrees", Short: "Open filter form to narrow the worktree list."},
 		{Key: "r", What: "Refresh", Short: "Reload worktrees and repository metadata."},
-		{Key: "?", What: "Open keybindings", Short: "Open this keybinding reference modal."},
+		{Key: "?", What: "Open keybindings", Short: "Open this contextual help window."},
 		{Key: "esc", What: "Close modal", Short: "Cancel and close the current modal window."},
 		{Key: "q / ctrl+c", What: "Quit", Short: "Exit the TUI."},
 	}
+
+	if inTable {
+		title = "Worktree List Help"
+		bindings = []binding{
+			{Key: "j / k, up / down", What: "Move selection", Short: "Navigate through your list of git worktrees."},
+			{Key: "enter / g", What: "Attach to worktree", Short: "Open/focus the tmux session for the selected worktree."},
+			{Key: "d", What: "Detach session", Short: "Stop the selected worktree's tmux session (keeps worktree)."},
+			{Key: "n", What: "New worktree", Short: "Create a new branch and worktree from this repo."},
+			{Key: "x", What: "Remove worktree", Short: "Delete the selected worktree (and optionally its branch)."},
+			{Key: "/", What: "Filter list", Short: "Narrow down the list by branch name or path."},
+		}
+	} else if inDetail && u.detailTab == detailTabDiff {
+		title = "Git Diff Help"
+		bindings = []binding{
+			{Key: "j / k", What: "Select file", Short: "Move through the list of changed files."},
+			{Key: "J / K", What: "Scroll patch", Short: "Scroll the patch view for the current file."},
+			{Key: "ctrl+u / ctrl+d", What: "Fast scroll", Short: "Scroll the patch view faster (10 lines)."},
+			{Key: "h / l, [ / ]", What: "Switch tab", Short: "Switch back to Agent Output or next tab."},
+		}
+	} else if inDetail && u.detailTab == detailTabAgent {
+		title = "Agent Output Help"
+		bindings = []binding{
+			{Key: "j / k, up / down", What: "Scroll output", Short: "Scroll through the agent's terminal output."},
+			{Key: "pgup / pgdn", What: "Fast scroll", Short: "Scroll through output faster."},
+			{Key: "h / l, [ / ]", What: "Switch tab", Short: "Switch to Git Diff or next tab."},
+		}
+	} else {
+		title = "General Help"
+	}
+
+	bindings = append(bindings, general...)
 
 	table := tview.NewTable().
 		SetSelectable(true, false).
@@ -2749,6 +3105,7 @@ func (u *tuiState) showHelpModal() {
 	table.SetSelectedStyle(tcell.StyleDefault.Foreground(tcell.ColorDefault).Background(tcell.ColorDefault).Reverse(true))
 	table.SetBorder(true)
 	table.SetBorderColor(paneBorderColor())
+	table.SetTitle(fmt.Sprintf(" %s ", title))
 
 	headers := []string{"Key", "Action"}
 	for col, h := range headers {
@@ -2779,7 +3136,7 @@ func (u *tuiState) showHelpModal() {
 	hint.SetWrap(false)
 	hint.SetTextColor(ansiColor(ansiCyan))
 	hint.SetBackgroundColor(tcell.ColorDefault)
-	hint.SetText("j/k or arrows scroll | enter keep focus | esc close")
+	hint.SetText("j/k scroll | enter select | esc close")
 
 	counter := tview.NewTextView().SetDynamicColors(true)
 	counter.SetWrap(false)
@@ -2829,7 +3186,7 @@ func (u *tuiState) showHelpModal() {
 		}
 		if ev.Key() == tcell.KeyRune {
 			switch ev.Rune() {
-			case 'q':
+			case 'c':
 				u.closeModal("help")
 				return nil
 			case 'j':
@@ -2860,7 +3217,7 @@ func (u *tuiState) showHelpModal() {
 		AddItem(meta, 1, 0, false)
 	modal.SetBackgroundColor(tcell.ColorDefault)
 
-	u.showModal("help", modal, 118, 30)
+	u.showModal("help", modal, 118, 24)
 	table.Select(1, 0)
 	updateSelection(1)
 	u.app.SetFocus(table)

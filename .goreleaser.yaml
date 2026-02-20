@@ -35,7 +35,7 @@ brews:
       email: github-actions[bot]@users.noreply.github.com
     repository:
       owner: "{{ .Env.HOMEBREW_TAP_OWNER }}"
-      name: "{{ .Env.HOMEBREW_TAP_NAME }}"
+      name: homebrew-sprout
       branch: "{{ .Env.HOMEBREW_TAP_BRANCH }}"
       token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
     directory: Formula

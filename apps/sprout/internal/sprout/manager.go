@@ -47,7 +47,60 @@ type NewOptions struct {
 	Type       string
 	Name       string
 	BaseBranch string
+	FromBranch string
 	Launch     bool
+}
+
+// BranchInfo describes a git branch available for creating a new worktree.
+type BranchInfo struct {
+	Name   string
+	Remote bool // true if only available as a remote-tracking branch
+}
+
+// ListBranches returns all local and remote branches not already checked out
+// in an existing worktree.
+func (m *Manager) ListBranches(repoRoot string) ([]BranchInfo, error) {
+	inUse := map[string]bool{}
+	if worktrees, err := m.ListWorktrees(); err == nil {
+		for _, wt := range worktrees {
+			if wt.Branch != "" {
+				inUse[wt.Branch] = true
+			}
+		}
+	}
+
+	localOut, _ := runCmdOutput(repoRoot, "git", "branch", "--format=%(refname:short)")
+	localSet := map[string]bool{}
+	var result []BranchInfo
+	for _, name := range strings.Split(strings.TrimSpace(localOut), "\n") {
+		name = strings.TrimSpace(name)
+		if name == "" || inUse[name] {
+			continue
+		}
+		localSet[name] = true
+		result = append(result, BranchInfo{Name: name})
+	}
+
+	remoteOut, _ := runCmdOutput(repoRoot, "git", "branch", "-r", "--format=%(refname:short)")
+	for _, ref := range strings.Split(strings.TrimSpace(remoteOut), "\n") {
+		ref = strings.TrimSpace(ref)
+		if ref == "" {
+			continue
+		}
+		name := ref
+		if idx := strings.Index(ref, "/"); idx >= 0 {
+			name = ref[idx+1:]
+		}
+		if strings.Contains(name, "HEAD") || localSet[name] || inUse[name] {
+			continue
+		}
+		result = append(result, BranchInfo{Name: name, Remote: true})
+	}
+
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].Name < result[j].Name
+	})
+	return result, nil
 }
 
 type GoOptions struct {
@@ -89,6 +142,14 @@ func (m *Manager) RequireRepo() (string, error) {
 }
 
 func (m *Manager) RepoName(repoRoot string) string {
+	// Try to get the common git dir to find the "real" repo name
+	out, err := runCmdOutput(repoRoot, "git", "rev-parse", "--path-format=absolute", "--git-common-dir")
+	if err == nil {
+		commonDir := strings.TrimSpace(out)
+		// If it's a worktree, commonDir will be /path/to/mainrepo/.git
+		// We want 'mainrepo'
+		return filepath.Base(filepath.Dir(commonDir))
+	}
 	return filepath.Base(repoRoot)
 }
 
@@ -460,8 +521,185 @@ func (m *Manager) tmuxFocusWindow(session, window string, attachOutside bool) er
 	return nil
 }
 
+// resolvePaneDir resolves a pane dir spec to an absolute path.
+// Returns "" when dir is empty (caller should use the worktree path as default).
+//   - "~" or "~/..." → expands to home directory
+//   - "{worktree}" prefix → replaced with worktreePath
+//   - Absolute path → returned as-is
+//   - Relative path → returned as-is (tmux -c accepts relative paths)
+func resolvePaneDir(dir, worktreePath string) string {
+	dir = strings.TrimSpace(dir)
+	if dir == "" {
+		return ""
+	}
+	if dir == "~" {
+		if home, err := os.UserHomeDir(); err == nil {
+			return home
+		}
+		return dir
+	}
+	if strings.HasPrefix(dir, "~/") {
+		if home, err := os.UserHomeDir(); err == nil {
+			return filepath.Join(home, dir[2:])
+		}
+		return dir
+	}
+	if strings.HasPrefix(dir, "{worktree}") {
+		rest := strings.TrimPrefix(dir, "{worktree}")
+		if rest == "" {
+			return worktreePath
+		}
+		return filepath.Join(worktreePath, rest)
+	}
+	return dir
+}
+
+// tmuxSplitFlag returns the tmux split-window flag for a given layout name.
+// Horizontal layouts use -h (split left/right); everything else uses -v.
+func tmuxSplitFlag(layout string) string {
+	switch strings.ToLower(strings.TrimSpace(layout)) {
+	case "even-horizontal", "main-vertical":
+		return "-h"
+	default:
+		return "-v"
+	}
+}
+
+// tmuxLaunchWindowedSession creates (or attaches to) a tmux session built from
+// a structured []WindowConfig. It is idempotent: if the session already exists
+// all ensure calls are no-ops and pane splitting is skipped.
+func (m *Manager) tmuxLaunchWindowedSession(session, worktreePath string, windows []WindowConfig) (string, string, error) {
+	sessionIsNew := !m.tmuxHasSession(session)
+
+	for i, win := range windows {
+		winName := trimTmuxWindowName(win.Name)
+		if winName == "" {
+			winName = fmt.Sprintf("window-%d", i+1)
+		}
+
+		// Resolve pane 0's dir and command.
+		pane0Dir := worktreePath
+		pane0Cmd := defaultShellCommand()
+		if len(win.Panes) > 0 {
+			if d := resolvePaneDir(win.Panes[0].Dir, worktreePath); d != "" {
+				pane0Dir = d
+			}
+			if c := strings.TrimSpace(win.Panes[0].Run); c != "" {
+				pane0Cmd = c
+			}
+		}
+
+		if i == 0 && sessionIsNew {
+			if err := m.tmuxEnsureSession(session, pane0Dir, winName, pane0Cmd); err != nil {
+				return "", "", err
+			}
+		} else {
+			if err := m.tmuxEnsureWindow(session, winName, pane0Dir, pane0Cmd); err != nil {
+				return "", "", err
+			}
+		}
+
+		if !sessionIsNew {
+			continue // don't re-split panes in an existing session
+		}
+
+		splitFlag := tmuxSplitFlag(win.Layout)
+		for j, pane := range win.Panes {
+			if j == 0 {
+				continue // pane 0 was created with the window/session
+			}
+			paneDir := worktreePath
+			if d := resolvePaneDir(pane.Dir, worktreePath); d != "" {
+				paneDir = d
+			}
+			args := []string{"split-window", splitFlag, "-t", session + ":" + winName, "-c", paneDir}
+			if pane.Run != "" {
+				args = append(args, pane.Run)
+			}
+			if err := runCmdQuiet("", "tmux", args...); err != nil {
+				return "", "", err
+			}
+		}
+
+		// Apply the tmux layout. Default to even-horizontal when multiple panes
+		// are defined but no explicit layout is set.
+		layout := win.Layout
+		if layout == "" && len(win.Panes) > 1 {
+			layout = "even-horizontal"
+		}
+		if layout != "" && len(win.Panes) > 1 {
+			_ = runCmdQuiet("", "tmux", "select-layout", "-t", session+":"+winName, layout)
+		}
+	}
+
+	firstWin := ""
+	if len(windows) > 0 {
+		firstWin = trimTmuxWindowName(windows[0].Name)
+		if firstWin == "" {
+			firstWin = "window-1"
+		}
+	}
+	return session, firstWin, nil
+}
+
 func (m *Manager) tmuxEnsureWorktreeWindow(repoRoot, branch, worktreePath string) (string, string, error) {
 	session := m.tmuxWorktreeSessionNameFrom(repoRoot, branch, worktreePath)
+
+	// Priority 1: structured [[windows]] config
+	if len(m.Cfg.Windows) > 0 {
+		return m.tmuxLaunchWindowedSession(session, worktreePath, m.Cfg.Windows)
+	}
+
+	// Priority 2: legacy flat layout_* config
+	repoName := m.RepoName(repoRoot)
+	if layout, ok := m.Cfg.SessionLayouts[repoName]; ok {
+		if len(layout.Windows) > 0 {
+			for i, win := range layout.Windows {
+				winName := trimTmuxWindowName(win.Name)
+				if i == 0 && !m.tmuxHasSession(session) {
+					// Use first pane of first window for session creation
+					initialCmd := defaultShellCommand()
+					if len(win.Panes) > 0 {
+						initialCmd = win.Panes[0].Command
+					}
+					if err := m.tmuxEnsureSession(session, worktreePath, winName, initialCmd); err != nil {
+						return "", "", err
+					}
+				}
+
+				if err := m.tmuxEnsureWindow(session, winName, worktreePath, ""); err != nil {
+					return "", "", err
+				}
+
+				// Create panes
+				for j, pane := range win.Panes {
+					if i == 0 && j == 0 && !m.tmuxHasSession(session) {
+						continue // already created as initial session pane
+					}
+					if j == 0 {
+						// The window itself is the first pane
+						if pane.Command != "" {
+							_ = tmuxSendPaneCommand(session+":"+winName+".0", pane.Command)
+						}
+						continue
+					}
+					// Split window for subsequent panes
+					args := []string{"split-window", "-v", "-t", session + ":" + winName, "-c", worktreePath}
+					if pane.Command != "" {
+						args = append(args, pane.Command)
+					}
+					if err := runCmdQuiet("", "tmux", args...); err != nil {
+						return "", "", err
+					}
+				}
+				// Equalize panes
+				_ = runCmdQuiet("", "tmux", "select-layout", "-t", session+":"+winName, "even-vertical")
+			}
+			return session, trimTmuxWindowName(layout.Windows[0].Name), nil
+		}
+	}
+
+	// Default tool-based layout
 	windows := m.tmuxConfiguredWindows(branch, commandExists)
 	if len(windows) == 0 {
 		windows = []tmuxWindowSpec{{
@@ -945,6 +1183,23 @@ func (m *Manager) CopyUntrackedAndIgnored(sourceRoot, targetRoot string) error {
 	return nil
 }
 
+func (m *Manager) CreateWorktreeFromExisting(repoRoot, branch, worktreePath string) error {
+	if _, err := os.Stat(worktreePath); err == nil {
+		return fmt.Errorf("target path already exists: %s", worktreePath)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(worktreePath), 0o755); err != nil {
+		return err
+	}
+	// Try local branch first, then remote
+	if m.BranchExists(repoRoot, branch) {
+		return runCmdQuiet(repoRoot, "git", "worktree", "add", worktreePath, branch)
+	}
+	// If it doesn't exist locally, git might still find it in remotes if --guess-remote is on (default)
+	return runCmdQuiet(repoRoot, "git", "worktree", "add", worktreePath, branch)
+}
+
 func (m *Manager) NewWorktree(opts NewOptions) (string, string, error) {
 	repoRoot, err := m.RequireRepo()
 	if err != nil {
@@ -953,6 +1208,11 @@ func (m *Manager) NewWorktree(opts NewOptions) (string, string, error) {
 	}
 
 	branch := strings.TrimSpace(opts.Branch)
+	isExisting := opts.FromBranch != ""
+	if isExisting {
+		branch = opts.FromBranch
+	}
+
 	if branch == "" {
 		branch, err = m.MakeBranchName(opts.Type, opts.Name)
 		if err != nil {
@@ -960,22 +1220,30 @@ func (m *Manager) NewWorktree(opts NewOptions) (string, string, error) {
 			return "", "", err
 		}
 	}
-	debugLogf("new_worktree start repo=%q branch=%q launch=%t", repoRoot, branch, opts.Launch)
-
-	base, err := m.ResolveBaseBranch(repoRoot, opts.BaseBranch)
-	if err != nil {
-		debugLogf("new_worktree resolve_base failed branch=%q requested_base=%q: %v", branch, opts.BaseBranch, err)
-		return "", "", err
-	}
+	debugLogf("new_worktree start repo=%q branch=%q launch=%t existing=%t", repoRoot, branch, opts.Launch, isExisting)
 
 	worktreeRoot := m.WorktreeRootDir(repoRoot)
 	worktreePath := absPath(filepath.Join(worktreeRoot, branch))
 
-	if err := m.CreateWorktreeWithBranch(repoRoot, branch, worktreePath, base); err != nil {
-		debugLogf("new_worktree create_worktree failed branch=%q path=%q base=%q: %v", branch, worktreePath, base, err)
-		return "", "", err
+	if isExisting {
+		if err := m.CreateWorktreeFromExisting(repoRoot, branch, worktreePath); err != nil {
+			debugLogf("new_worktree create_worktree_from_existing failed branch=%q path=%q: %v", branch, worktreePath, err)
+			return "", "", err
+		}
+	} else {
+		base, err := m.ResolveBaseBranch(repoRoot, opts.BaseBranch)
+		if err != nil {
+			debugLogf("new_worktree resolve_base failed branch=%q requested_base=%q: %v", branch, opts.BaseBranch, err)
+			return "", "", err
+		}
+
+		if err := m.CreateWorktreeWithBranch(repoRoot, branch, worktreePath, base); err != nil {
+			debugLogf("new_worktree create_worktree failed branch=%q path=%q base=%q: %v", branch, worktreePath, base, err)
+			return "", "", err
+		}
 	}
-	debugLogf("new_worktree created branch=%q path=%q base=%q", branch, worktreePath, base)
+
+	debugLogf("new_worktree created branch=%q path=%q", branch, worktreePath)
 	if err := m.CopyUntrackedAndIgnored(repoRoot, worktreePath); err != nil {
 		debugLogf("new_worktree copy_untracked_failed path=%q: %v", worktreePath, err)
 		return "", "", err

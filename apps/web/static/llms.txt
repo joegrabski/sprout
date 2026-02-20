@@ -1,0 +1,19 @@
+# Sprout
+
+> Sprout is a TUI for managing git worktrees with tmux sessions and AI coding agents. Work on multiple branches simultaneously without stashing or losing context.
+
+Each worktree gets its own tmux session with your editor, lazygit, and an AI agent, all isolated per branch.
+
+## Docs
+
+- [Introduction](https://sprout.dev/docs/intro): Quick start guide and basic commands
+- [Installation](https://sprout.dev/docs/installation): brew tap joegrabski/sprout, pre-built binaries, build from source, and shell integration
+- [Configuration](https://sprout.dev/docs/configuration): Config file options, environment variables, and example config
+- [CLI Reference](https://sprout.dev/docs/cli): All sprout commands with syntax and examples
+- [AI Agents](https://sprout.dev/docs/agents): Supported agents (Codex, Aider, Claude Code, Gemini), setup and API keys
+- [Troubleshooting](https://sprout.dev/docs/troubleshooting): Common issues and solutions
+
+## Reference
+
+- [CLI Commands Reference](https://sprout.dev/docs/cli/commands): Complete reference for all CLI commands with flags and examples
+- [Configuration Reference](https://sprout.dev/docs/configuration/reference): Complete reference for all configuration options with defaults and environment variables
