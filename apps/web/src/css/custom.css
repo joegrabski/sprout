@@ -1,7 +1,7 @@
 @import url("https://fonts.googleapis.com/css2?family=Inter:ital,wght@0,400;0,500;0,600;0,700;0,800;0,900;1,400&family=JetBrains+Mono:wght@400;500;700&display=swap");
 
 /**
- * Sprout — brand CSS
+ * Sprout - brand CSS
  * Primary: #0daf62 (fresh vivid green)
  * Dark mode: deep forest-green backgrounds (#06100a)
  * Footer / overscroll: #081a0e
@@ -9,7 +9,7 @@
 
 /* ── Overscroll colour matches footer ──────────── */
 html {
-  background: #081a0e;
+  background: #0d0f0e;
   scroll-behavior: smooth;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
@@ -17,7 +17,7 @@ html {
 
 /* ── Design tokens ──────────────────────────────── */
 :root {
-  /* Sprout primary — fresh growth green */
+  /* Sprout primary - fresh growth green */
   --ifm-color-primary: #0daf62;
   --ifm-color-primary-dark: #0b9e58;
   --ifm-color-primary-darker: #0a8d4e;
@@ -45,7 +45,7 @@ html {
   --docusaurus-highlighted-code-line-bg: rgba(13, 175, 98, 0.1);
 
   /* Backgrounds */
-  --ifm-background-color: #f6faf7;
+  --ifm-background-color: #fafbfb;
   --ifm-background-surface-color: #ffffff;
 
   /* Emphasis scale */
@@ -91,8 +91,8 @@ html {
 
   --docusaurus-highlighted-code-line-bg: rgba(34, 212, 122, 0.1);
 
-  --ifm-background-color: #06100a;
-  --ifm-background-surface-color: #0c1c11;
+  --ifm-background-color: #0d0f0e;
+  --ifm-background-surface-color: #121413;
 
   --ifm-color-emphasis-0: #ffffff;
   --ifm-color-emphasis-100: #f0fdf4;
@@ -102,8 +102,8 @@ html {
   --ifm-color-emphasis-500: #4f8a68;
   --ifm-color-emphasis-600: #264834;
   --ifm-color-emphasis-700: #162c1f;
-  --ifm-color-emphasis-800: #0e1e15;
-  --ifm-color-emphasis-900: #08130d;
+  --ifm-color-emphasis-800: #121413;
+  --ifm-color-emphasis-900: #0d0f0e;
 
   --ifm-font-color-base: #ebfaf1;
   --ifm-font-color-secondary: #9fc4ad;
@@ -154,8 +154,8 @@ h6 {
 }
 
 .navbar__logo {
-  height: 22px;
-  width: 22px;
+  height: 26px;
+  width: auto;
 }
 
 .navbar__title {
@@ -299,7 +299,7 @@ div[class*="codeBlockContainer"] {
     0 0 0 0.5px rgba(34, 212, 122, 0.06);
 }
 
-/* The pre/code area — dark forest, not dracula blue-gray */
+/* The pre/code area: dark forest, not dracula blue-gray */
 .prism-code {
   background: #0c1b10 !important;
   font-size: 0.84rem !important;
@@ -316,7 +316,7 @@ div[class*="codeBlockContainer"] {
   color: #c8e6d0 !important;
 }
 
-/* Comments — muted, italic */
+/* Comments: muted, italic */
 .prism-code .token.comment,
 .prism-code .token.prolog,
 .prism-code .token.doctype,
@@ -413,7 +413,7 @@ div[class*="codeBlockContent"] {
   background: #0c1b10 !important;
 }
 
-/* Copy button — scoped to code blocks only */
+/* Copy button: scoped to code blocks only */
 div[class*="codeBlockContainer"] div[class*="buttonGroup"] {
   top: 0.6rem !important;
   right: 0.6rem !important;
