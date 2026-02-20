@@ -7,7 +7,7 @@ sidebar_position: 2
 ## Homebrew (macOS/Linux)
 
 ```bash
-brew tap joegrabski/sprout https://github.com/joegrabski/sprout
+brew tap joegrabski/sprout
 brew install sprout
 ```
 

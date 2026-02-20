@@ -67,6 +67,6 @@ sprout rm feat/checkout-redesign --delete-branch
 ## Stop stashing. Start sprouting.
 
 ```bash
-brew tap joegrabski/sprout https://github.com/joegrabski/sprout
+brew tap joegrabski/sprout
 brew install sprout
 ```
