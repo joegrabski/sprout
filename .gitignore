@@ -5,3 +5,4 @@
 # Web
 apps/web/node_modules/
 apps/web/dist/
+.wrangler/

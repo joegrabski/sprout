@@ -25,18 +25,18 @@ Sprout simplifies git worktree management by providing:
 ### Homebrew (macOS/Linux)
 
 ```bash
-brew tap jgrabski/sprout
+brew tap joegrabski/sprout
 brew install sprout
 ```
 
 ### Pre-built Binaries
 
-Download from [GitHub Releases](https://github.com/jgrabski/sprout/releases)
+Download from [GitHub Releases](https://github.com/joegrabski/sprout/releases)
 
 ### From Source
 
 ```bash
-git clone https://github.com/jgrabski/sprout.git
+git clone https://github.com/joegrabski/sprout.git
 cd sprout
 make sprout-build
 sudo make sprout-install
@@ -181,5 +181,5 @@ MIT License - see LICENSE file for details
 ## Support
 
 - [Documentation](https://sprout.dev)
-- [GitHub Issues](https://github.com/jgrabski/sprout/issues)
-- [Discussions](https://github.com/jgrabski/sprout/discussions)
+- [GitHub Issues](https://github.com/joegrabski/sprout/issues)
+- [Discussions](https://github.com/joegrabski/sprout/discussions)
