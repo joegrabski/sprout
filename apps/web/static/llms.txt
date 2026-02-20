@@ -7,7 +7,7 @@ Each worktree gets its own tmux session with your editor, lazygit, and an AI age
 ## Docs
 
 - [Introduction](https://sprout.dev/docs/intro): Quick start guide and basic commands
-- [Installation](https://sprout.dev/docs/installation): Homebrew, pre-built binaries, build from source, and shell integration
+- [Installation](https://sprout.dev/docs/installation): brew tap joegrabski/sprout https://github.com/joegrabski/sprout, pre-built binaries, build from source, and shell integration
 - [Configuration](https://sprout.dev/docs/configuration): Config file options, environment variables, and example config
 - [CLI Reference](https://sprout.dev/docs/cli): All sprout commands with syntax and examples
 - [AI Agents](https://sprout.dev/docs/agents): Supported agents (Codex, Aider, Claude Code, Gemini), setup and API keys

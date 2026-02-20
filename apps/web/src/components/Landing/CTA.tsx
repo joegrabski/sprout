@@ -13,7 +13,7 @@ export function CTASection() {
         </div>
         <h2 className={styles.ctaTitle}>Stop stashing. Start sprouting.</h2>
         <p className={styles.ctaSubtitle}>
-          brew tap joegrabski/sprout &amp;&amp; brew install sprout
+          brew tap joegrabski/sprout https://github.com/joegrabski/sprout &amp;&amp; brew install sprout
         </p>
         <div className={styles.ctaButtons}>
           <Link

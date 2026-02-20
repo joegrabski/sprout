@@ -40,7 +40,7 @@ export function InstallCommand() {
         <Terminal size={13} />
         <span>Install via Homebrew</span>
       </div>
-      <InstallLine command="brew tap joegrabski/sprout" />
+      <InstallLine command="brew tap joegrabski/sprout https://github.com/joegrabski/sprout" />
       <InstallLine command="brew install sprout" />
       <div className={styles.installLinks}>
         <Link to="/docs/installation">Other installation methods →</Link>

@@ -271,6 +271,8 @@ The shell hook enables automatic directory changing when using sprout commands.
 
 Installation:
   # For Zsh (add to ~/.zshrc)
+  brew tap joegrabski/sprout https://github.com/joegrabski/sprout
+  brew install sprout
   eval "$(sprout shell-hook zsh)"
 
   # For Bash (add to ~/.bashrc)

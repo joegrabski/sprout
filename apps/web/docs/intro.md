@@ -64,11 +64,9 @@ sprout rm feat/checkout-redesign
 sprout rm feat/checkout-redesign --delete-branch
 ```
 
-## Recommended config
+## Stop stashing. Start sprouting.
 
-```toml
-base_branch = "main"
-auto_launch = true
-auto_start_agent = true
-session_tools = ["agent", "lazygit", "nvim"]
+```bash
+brew tap joegrabski/sprout https://github.com/joegrabski/sprout
+brew install sprout
 ```
