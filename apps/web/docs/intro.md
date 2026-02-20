@@ -17,7 +17,7 @@ sprout go feat/checkout-redesign
 sprout
 ```
 
-Each worktree gets its own tmux session with your editor, lazygit, and an AI agent — all isolated per branch.
+Each worktree gets its own tmux session with your editor, lazygit, and an AI agent, all isolated per branch.
 
 ## Quick start
 

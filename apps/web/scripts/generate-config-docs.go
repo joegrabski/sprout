@@ -28,9 +28,9 @@ Complete reference for all Sprout configuration options.
 
 Sprout loads configuration in the following order, with each layer overriding the previous:
 
-1. **Global config** — {{ backtick }}~/.config/sprout/config.toml{{ backtick }} (or {{ backtick }}$SPROUT_CONFIG{{ backtick }} if set)
-2. **Repo config** — {{ backtick }}.sprout.toml{{ backtick }} at the root of the current git repository
-3. **Environment variables** — highest priority, override everything
+1. **Global config**: {{ backtick }}~/.config/sprout/config.toml{{ backtick }} (or {{ backtick }}$SPROUT_CONFIG{{ backtick }} if set)
+2. **Repo config**: {{ backtick }}.sprout.toml{{ backtick }} at the root of the current git repository
+3. **Environment variables**: highest priority, override everything
 
 The repo config only needs to contain the keys you want to override. Everything else falls back to the global config.
 
@@ -223,6 +223,13 @@ func main() {
 			Default:     "varies",
 			EnvVar:      "SPROUT_AGENT_COMMAND_*",
 			Description: "Custom command for specific agent type (* = agent type)",
+		},
+		{
+			Name:        "layout_<repo>_win_<name>_pane_<idx>",
+			Type:        "string",
+			Default:     "-",
+			EnvVar:      "-",
+			Description: "Custom multi-pane tmux window configuration",
 		},
 	}
 

@@ -48,17 +48,17 @@ sprout doctor
 
 Enables automatic directory changing with `sprout go` and `sprout new`.
 
-**Zsh** — add to `~/.zshrc`:
+**Zsh**: add to `~/.zshrc`:
 ```bash
 eval "$(sprout shell-hook zsh)"
 ```
 
-**Bash** — add to `~/.bashrc`:
+**Bash**: add to `~/.bashrc`:
 ```bash
 eval "$(sprout shell-hook bash)"
 ```
 
-**Fish** — add to `~/.config/fish/config.fish`:
+**Fish**: add to `~/.config/fish/config.fish`:
 ```fish
 sprout shell-hook fish | source
 ```

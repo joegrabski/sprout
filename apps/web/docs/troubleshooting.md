@@ -4,7 +4,7 @@ sidebar_position: 6
 
 # Troubleshooting
 
-Run `sprout doctor` first — it checks git, tmux, your config, and configured agents.
+Run `sprout doctor` first, it checks git, tmux, your config, and configured agents.
 
 ## Command not found
 

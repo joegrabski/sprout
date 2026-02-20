@@ -11,14 +11,15 @@ Launch the interactive TUI.
 ## `sprout new`
 
 ```
-sprout new <type> <name> [--from <base>] [--no-launch]
+sprout new <type> <name> [--from <base>] [--from-branch <branch>] [--no-launch]
 ```
 
-Create a worktree and branch. The branch name is `<type>/<name>`.
+Create a worktree and branch.
 
 ```bash
 sprout new feat checkout-redesign
 sprout new fix urgent-bug --from main
+sprout new --from-branch feat/pre-existing-feature
 sprout new chore update-deps --no-launch
 ```
 
