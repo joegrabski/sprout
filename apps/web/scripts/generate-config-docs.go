@@ -228,6 +228,10 @@ func main() {
 	}
 
 	outputPath := filepath.Join("..", "docs", "configuration", "reference.md")
+	if err := os.MkdirAll(filepath.Dir(outputPath), 0755); err != nil {
+		fmt.Fprintf(os.Stderr, "error creating docs directory: %v\n", err)
+		os.Exit(1)
+	}
 	if err := os.WriteFile(outputPath, buf.Bytes(), 0644); err != nil {
 		fmt.Fprintf(os.Stderr, "error writing docs: %v\n", err)
 		os.Exit(1)
