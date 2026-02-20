@@ -744,7 +744,116 @@ function DemoSection() {
   );
 }
 
+type AgentLine =
+  | { t: "cmd"; text: string }
+  | { t: "thought"; text: string }
+  | { t: "success"; text: string }
+  | { t: "blank" };
+
+const TUI_AGENT_LINES: AgentLine[][] = [
+  // feat/checkout
+  [
+    { t: "cmd",     text: "Reading src/hooks/useCart.ts..." },
+    { t: "blank" },
+    { t: "thought", text: "The cart total isn't guarded — null on" },
+    { t: "thought", text: "first render will throw. Adding optional" },
+    { t: "thought", text: "chaining and a zero fallback." },
+    { t: "blank" },
+    { t: "cmd",     text: "Editing src/hooks/useCart.ts..." },
+    { t: "success", text: "Patched — cart?.total ?? 0" },
+    { t: "cmd",     text: "Running tests..." },
+    { t: "success", text: "12 passed, 0 failed" },
+  ],
+  // fix/auth-bug
+  [
+    { t: "cmd",     text: "Reading src/auth/token.ts..." },
+    { t: "blank" },
+    { t: "thought", text: "refreshToken fires without checking if" },
+    { t: "thought", text: "a refresh is already in progress —" },
+    { t: "thought", text: "duplicate requests under load. Adding" },
+    { t: "thought", text: "an isRefreshing guard." },
+    { t: "blank" },
+    { t: "cmd",     text: "Editing src/auth/token.ts..." },
+    { t: "success", text: "Added guard on line 47" },
+    { t: "success", text: "8 passed, 0 failed" },
+  ],
+  // chore/cleanup
+  [
+    { t: "cmd",     text: "Scanning for unused imports..." },
+    { t: "blank" },
+    { t: "thought", text: "Found 3 files with dead imports." },
+    { t: "thought", text: "Removing them to keep the bundle lean." },
+    { t: "blank" },
+    { t: "cmd",     text: "Editing 3 files..." },
+    { t: "success", text: "Removed 12 unused imports" },
+    { t: "success", text: "0 warnings, 0 errors" },
+  ],
+];
+
+const TUI_SCENES = [
+  {
+    worktree: "feat/checkout",
+    agentStatus: "running" as const,
+    rowIndex: 1,
+  },
+  {
+    worktree: "fix/auth-bug",
+    agentStatus: "running" as const,
+    rowIndex: 2,
+  },
+  {
+    worktree: "chore/cleanup",
+    agentStatus: "running" as const,
+    rowIndex: 3,
+  },
+];
+
+const TUI_ROWS = [
+  { label: "main",           status: "dirty", tmux: false, agent: false },
+  { label: "feat/checkout",  status: "dirty", tmux: true,  agent: true  },
+  { label: "fix/auth-bug",   status: "dirty", tmux: true,  agent: true  },
+  { label: "chore/cleanup",  status: "clean", tmux: false, agent: false },
+];
+
+// 2 tabs (agent, diff) per scene × 3 scenes = 6 steps
+const TUI_TOTAL_STEPS = TUI_SCENES.length * 2;
+
 function TUISection() {
+  const [step, setStep] = useState(0);
+  const [visible, setVisible] = useState(true);
+
+  const sceneIdx = Math.floor(step / 2);
+  const tab = step % 2 === 0 ? "agent" : "diff";
+  const scene = TUI_SCENES[sceneIdx];
+
+  const [visibleLines, setVisibleLines] = useState(0);
+
+  // Advance the step every 5.5s
+  useEffect(() => {
+    const id = setInterval(() => {
+      setVisible(false);
+      setTimeout(() => {
+        setStep((s) => (s + 1) % TUI_TOTAL_STEPS);
+        setVisible(true);
+      }, 250);
+    }, 5500);
+    return () => clearInterval(id);
+  }, []);
+
+  // Reveal agent lines one by one on each step
+  useEffect(() => {
+    setVisibleLines(0);
+    if (tab !== "agent") return;
+    const total = TUI_AGENT_LINES[sceneIdx].length;
+    let n = 0;
+    const id = setInterval(() => {
+      n++;
+      setVisibleLines(n);
+      if (n >= total) clearInterval(id);
+    }, 160);
+    return () => clearInterval(id);
+  }, [step]);
+
   return (
     <section className={styles.tuiSection}>
       <div className="container">
@@ -789,6 +898,7 @@ function TUISection() {
               </div>
             </div>
             <div className={styles.tuiBody}>
+              {/* Pane 1 — Status */}
               <div className={styles.tuiPaneBar}>
                 <div className={styles.tuiPaneBarLine} />
                 <span>[1]-Status</span>
@@ -800,11 +910,17 @@ function TUISection() {
                 <span className={styles.tuiDim}> → </span>
                 <span className={styles.tuiGreen}>main</span>
                 <span className={styles.tuiDim}>{"  "}selected: </span>
-                <span className={styles.tuiGreen}>feat/checkout</span>
+                <span
+                  className={styles.tuiGreen}
+                  style={{ transition: "opacity 0.25s", opacity: visible ? 1 : 0 }}
+                >
+                  {scene.worktree}
+                </span>
                 <span className={styles.tuiDim}>{"  "}agent: </span>
-                <span className={styles.tuiRed}>offline</span>
+                <span className={styles.tuiGreen}>running</span>
               </div>
 
+              {/* Pane 2 — Details */}
               <div className={styles.tuiPaneBar}>
                 <div className={styles.tuiPaneBarLine} />
                 <span>[2]-Details</span>
@@ -812,24 +928,65 @@ function TUISection() {
               </div>
               <div className={styles.tuiPaneContent}>
                 <div className={styles.tuiTabs}>
-                  <span className={styles.tuiTabActive}>AGENT OUTPUT</span>
+                  <span className={tab === "agent" ? styles.tuiTabActive : styles.tuiTabInactive}>
+                    AGENT OUTPUT
+                  </span>
                   <span className={styles.tuiDim}> │ </span>
-                  <span className={styles.tuiTabInactive}>GIT DIFF</span>
+                  <span className={tab === "diff" ? styles.tuiTabActive : styles.tuiTabInactive}>
+                    GIT DIFF
+                  </span>
                 </div>
-                <div className={styles.tuiDetailBody}>
-                  <div className={styles.tuiDim}>
-                    Agent pane is not available for this worktree.
-                  </div>
-                  <div className={styles.tuiDim}>&nbsp;</div>
-                  <div className={styles.tuiDim}>
-                    Press enter or g on the worktree list to attach.
-                  </div>
-                  <div className={styles.tuiDim}>
-                    A tmux session will open with your configured session tools.
+                <div className={styles.tuiDetailPane}>
+                  <div
+                    className={clsx(styles.tuiDetailBody, tab === "diff" && styles.tuiDetailBodyTop)}
+                    style={{ opacity: visible ? 1 : 0, transition: "opacity 0.25s" }}
+                  >
+                    {tab === "agent" ? (
+                      TUI_AGENT_LINES[sceneIdx].slice(0, visibleLines).map((line, i) =>
+                        line.t === "blank" ? (
+                          <div key={i}>&nbsp;</div>
+                        ) : line.t === "cmd" ? (
+                          <div key={i}>
+                            <span className={styles.tuiDim}>&gt; </span>
+                            <span className={styles.tuiMuted}>{line.text}</span>
+                          </div>
+                        ) : line.t === "success" ? (
+                          <div key={i}>
+                            <span className={styles.tuiGreen}>✓ </span>
+                            <span className={styles.tuiDim}>{line.text}</span>
+                          </div>
+                        ) : (
+                          <div key={i} className={styles.tuiDim}>{line.text}</div>
+                        )
+                      )
+                    ) : (
+                      sceneIdx === 0 ? <>
+                        <div className={styles.tuiDim}>src/hooks/useCart.ts</div>
+                        <div><span className={styles.tuiRed}>-{"  "}const total = cart.total</span></div>
+                        <div><span className={styles.tuiGreen}>+{"  "}const total = cart?.total ?? 0</span></div>
+                        <div className={styles.tuiDim}>&nbsp;</div>
+                        <div className={styles.tuiDim}>src/components/Cart.tsx</div>
+                        <div><span className={styles.tuiGreen}>+{"  "}if (!items) return null</span></div>
+                      </> : sceneIdx === 1 ? <>
+                        <div className={styles.tuiDim}>src/auth/token.ts</div>
+                        <div><span className={styles.tuiRed}>-{"  "}refreshToken()</span></div>
+                        <div><span className={styles.tuiGreen}>+{"  "}if (!isRefreshing) {"{"}</span></div>
+                        <div><span className={styles.tuiGreen}>+{"    "}refreshToken()</span></div>
+                        <div><span className={styles.tuiGreen}>+{"  "}{"}"}</span></div>
+                      </> : <>
+                        <div className={styles.tuiDim}>src/utils/format.ts</div>
+                        <div><span className={styles.tuiRed}>-{"  "}import {"{ debounce }"} from 'lodash'</span></div>
+                        <div><span className={styles.tuiRed}>-{"  "}import {"{ merge }"} from 'lodash'</span></div>
+                        <div className={styles.tuiDim}>&nbsp;</div>
+                        <div className={styles.tuiDim}>src/pages/Dashboard.tsx</div>
+                        <div><span className={styles.tuiRed}>-{"  "}import {"{ memo }"} from 'react'</span></div>
+                      </>
+                    )}
                   </div>
                 </div>
               </div>
 
+              {/* Pane 3 — Worktrees */}
               <div className={styles.tuiPaneBar}>
                 <div className={styles.tuiPaneBarLine} />
                 <span>[3]-Worktrees</span>
@@ -843,46 +1000,42 @@ function TUISection() {
                   <span>TMUX</span>
                   <span>AGENT</span>
                 </div>
-                <div
-                  className={clsx(
-                    styles.tuiTableRow,
-                    styles.tuiTableRowSelected,
-                  )}
-                >
-                  <span className={styles.tuiGreen}>*</span>
-                  <span className={styles.tuiMuted}>main</span>
-                  <span className={styles.tuiRed}>dirty</span>
-                  <span className={styles.tuiRed}>no</span>
-                  <span className={styles.tuiRed}>no</span>
-                </div>
-                <div className={styles.tuiTableRow}>
-                  <span />
-                  <span className={styles.tuiMuted}>feat/checkout</span>
-                  <span className={styles.tuiRed}>dirty</span>
-                  <span className={styles.tuiGreen}>yes</span>
-                  <span className={styles.tuiGreen}>yes</span>
-                </div>
-                <div className={styles.tuiTableRow}>
-                  <span />
-                  <span className={styles.tuiMuted}>fix/auth-bug</span>
-                  <span className={styles.tuiRed}>dirty</span>
-                  <span className={styles.tuiDim}>no</span>
-                  <span className={styles.tuiDim}>no</span>
-                </div>
-                <div className={styles.tuiTableRow}>
-                  <span />
-                  <span className={styles.tuiMuted}>chore/cleanup</span>
-                  <span className={styles.tuiRed}>dirty</span>
-                  <span className={styles.tuiGreen}>yes</span>
-                  <span className={styles.tuiGreen}>yes</span>
-                </div>
+                {TUI_ROWS.map((row, i) => (
+                  <div
+                    key={row.label}
+                    className={clsx(
+                      styles.tuiTableRow,
+                      i === scene.rowIndex && styles.tuiTableRowSelected,
+                    )}
+                  >
+                    <span className={i === scene.rowIndex ? styles.tuiGreen : undefined}>
+                      {i === scene.rowIndex ? "*" : ""}
+                    </span>
+                    <span className={styles.tuiMuted}>{row.label}</span>
+                    <span className={row.status === "dirty" ? styles.tuiRed : styles.tuiGreen}>
+                      {row.status}
+                    </span>
+                    <span className={row.tmux ? styles.tuiGreen : styles.tuiDim}>
+                      {row.tmux ? "yes" : "no"}
+                    </span>
+                    <span className={row.agent ? styles.tuiGreen : styles.tuiDim}>
+                      {row.agent ? "yes" : "no"}
+                    </span>
+                  </div>
+                ))}
               </div>
 
               <div className={styles.tuiBottomBar}>
                 <span className={styles.tuiDim}>
                   └ tab cycle modal focus │ esc close modal{"  "}INFO: ready
                 </span>
-                <span className={styles.tuiDim}>1 of 4{"  "}─ main ↗</span>
+                <span className={styles.tuiDim}>
+                  {scene.rowIndex + 1} of 4{"  "}─{" "}
+                  <span style={{ opacity: visible ? 1 : 0, transition: "opacity 0.25s" }}>
+                    {scene.worktree}
+                  </span>
+                  {" "}↗
+                </span>
               </div>
             </div>
           </div>

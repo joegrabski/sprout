@@ -906,8 +906,25 @@
   padding: 0.1rem 0.45rem;
 }
 
-.tuiDetailBody {
+.tuiDetailPane {
+  height: 9rem;
+  overflow: hidden;
+  position: relative;
   margin-top: 0.25rem;
+}
+
+.tuiDetailBody {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.tuiDetailBodyTop {
+  bottom: auto;
+  top: 0;
 }
 
 .tuiDetailBody div {
@@ -916,12 +933,13 @@
 
 .tuiTableHeader {
   display: grid;
-  grid-template-columns: 2.5ch 1fr 5.5ch 4.5ch 5ch;
+  grid-template-columns: 2.5ch 1fr 6.5ch 4.5ch 5.5ch;
   gap: 0 1ch;
   color: rgba(255, 255, 255, 0.28);
   font-size: 0.62rem;
   letter-spacing: 0.06em;
   text-transform: uppercase;
+  white-space: nowrap;
   padding-bottom: 0.3rem;
   border-bottom: 1px solid rgba(255, 255, 255, 0.06);
   margin-bottom: 0.2rem;
@@ -929,7 +947,7 @@
 
 .tuiTableRow {
   display: grid;
-  grid-template-columns: 2.5ch 1fr 5.5ch 4.5ch 5ch;
+  grid-template-columns: 2.5ch 1fr 6.5ch 4.5ch 5.5ch;
   gap: 0 1ch;
   padding: 0.15rem 0;
   font-size: 0.68rem;
