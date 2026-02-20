@@ -7,25 +7,25 @@ sidebar_position: 2
 ## Homebrew (macOS/Linux)
 
 ```bash
-brew tap jgrabski/sprout
+brew tap joegrabski/sprout
 brew install sprout
 ```
 
 ## Pre-built binaries
 
-Download from [GitHub Releases](https://github.com/jgrabski/sprout/releases).
+Download from [GitHub Releases](https://github.com/joegrabski/sprout/releases).
 
 ```bash
 # macOS (Apple Silicon)
-curl -L https://github.com/jgrabski/sprout/releases/latest/download/sprout-darwin-arm64 -o sprout
+curl -L https://github.com/joegrabski/sprout/releases/latest/download/sprout-darwin-arm64 -o sprout
 chmod +x sprout && sudo mv sprout /usr/local/bin/
 
 # macOS (Intel)
-curl -L https://github.com/jgrabski/sprout/releases/latest/download/sprout-darwin-amd64 -o sprout
+curl -L https://github.com/joegrabski/sprout/releases/latest/download/sprout-darwin-amd64 -o sprout
 chmod +x sprout && sudo mv sprout /usr/local/bin/
 
 # Linux (amd64)
-curl -L https://github.com/jgrabski/sprout/releases/latest/download/sprout-linux-amd64 -o sprout
+curl -L https://github.com/joegrabski/sprout/releases/latest/download/sprout-linux-amd64 -o sprout
 chmod +x sprout && sudo mv sprout /usr/local/bin/
 ```
 
@@ -34,7 +34,7 @@ chmod +x sprout && sudo mv sprout /usr/local/bin/
 Requires Go 1.21+.
 
 ```bash
-go install github.com/jgrabski/sprout/apps/sprout/cmd/sprout@latest
+go install github.com/joegrabski/sprout/apps/sprout/cmd/sprout@latest
 ```
 
 ## Verify

@@ -87,5 +87,5 @@ Validate with `sprout doctor`.
 ## Getting help
 
 1. Run `sprout doctor` and note the output
-2. Check [GitHub Issues](https://github.com/jgrabski/sprout/issues)
+2. Check [GitHub Issues](https://github.com/joegrabski/sprout/issues)
 3. File a new issue with your OS, shell, `sprout version`, and `sprout doctor` output

@@ -6,7 +6,7 @@ import { themes as prismThemes } from "prism-react-renderer";
 
 const config: Config = {
   title: "Sprout",
-  tagline: "Branch fearlessly. Stay in flow.",
+  tagline: "Split your work. Not your focus.",
   favicon: "img/favicon.svg",
 
   // Future flags, see https://docusaurus.io/docs/api/docusaurus-config#future

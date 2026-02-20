@@ -80,7 +80,6 @@ const MAX_COMMIT_DOTS_PER_WORKTREE = 20;
 const COMMIT_DOT_LIFETIME_MS = 4200;
 const PARALLEL_COMMIT_CADENCE_MS = 720;
 const COMMIT_OFFSET_STEP_MS = 140;
-const SCENE_TICK_MS = 50;
 const AGENT_BASE_SPEED = 0.00074;
 const USER_HOP_INTERVAL_MS = 3200;
 const USER_ORBIT_SPEED = 0.00105;
@@ -194,11 +193,13 @@ function GitWorktreeBackground() {
   }, [isClient]);
 
   useEffect(() => {
-    const tickId = window.setInterval(
-      () => setNowMs(Date.now()),
-      SCENE_TICK_MS,
-    );
-    return () => window.clearInterval(tickId);
+    let rafId: number;
+    const tick = () => {
+      setNowMs(Date.now());
+      rafId = requestAnimationFrame(tick);
+    };
+    rafId = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(rafId);
   }, []);
 
   useEffect(() => {
@@ -526,9 +527,9 @@ function HomepageHeader() {
           </div>
 
           <Heading as="h1" className={styles.heroTitle}>
-            <span className={styles.titleLine}>Branch fearlessly.</span>
+            <span className={styles.titleLine}>Split your work.</span>
             <span className={styles.titleLine}>
-              <span className={styles.titleGradient}>Stay in flow.</span>
+              <span className={styles.titleGradient}>Not your focus.</span>
             </span>
           </Heading>
 
@@ -743,6 +744,154 @@ function DemoSection() {
   );
 }
 
+function TUISection() {
+  return (
+    <section className={styles.tuiSection}>
+      <div className="container">
+        <div className={styles.tuiLayout}>
+          <div className={styles.tuiCopy}>
+            <span className={styles.sectionLabel}>Interface</span>
+            <h2 className={styles.sectionTitle}>
+              A TUI built for{" "}
+              <span className={styles.titleGradient}>parallel work.</span>
+            </h2>
+            <p className={styles.tuiDescription}>
+              Run <code>sprout ui</code> for a three-pane interface — every
+              branch, its tmux session, git state, and running agent, all
+              visible at once.
+            </p>
+            <ul className={styles.tuiPoints}>
+              <li>Jump between worktrees with a single keypress</li>
+              <li>Watch live agent output and git diffs side by side</li>
+              <li>Start, stop, and attach to agents without switching tabs</li>
+            </ul>
+          </div>
+
+          <div className={styles.tuiFrame}>
+            <div className={styles.terminalChrome}>
+              <div className={styles.terminalDots}>
+                <span
+                  className={styles.terminalDot}
+                  style={{ background: "#ff5f57" }}
+                />
+                <span
+                  className={styles.terminalDot}
+                  style={{ background: "#febc2e" }}
+                />
+                <span
+                  className={styles.terminalDot}
+                  style={{ background: "#28c840" }}
+                />
+              </div>
+              <div className={styles.terminalWindowTitle}>
+                <Terminal size={12} />
+                <span>sprout ui</span>
+              </div>
+            </div>
+            <div className={styles.tuiBody}>
+              <div className={styles.tuiPaneBar}>
+                <div className={styles.tuiPaneBarLine} />
+                <span>[1]-Status</span>
+                <div className={styles.tuiPaneBarLine} />
+              </div>
+              <div className={styles.tuiPaneContent}>
+                <span className={styles.tuiGreen}>✓</span>{" "}
+                <span className={styles.tuiMuted}>myapp</span>
+                <span className={styles.tuiDim}> → </span>
+                <span className={styles.tuiGreen}>main</span>
+                <span className={styles.tuiDim}>{"  "}selected: </span>
+                <span className={styles.tuiGreen}>feat/checkout</span>
+                <span className={styles.tuiDim}>{"  "}agent: </span>
+                <span className={styles.tuiRed}>offline</span>
+              </div>
+
+              <div className={styles.tuiPaneBar}>
+                <div className={styles.tuiPaneBarLine} />
+                <span>[2]-Details</span>
+                <div className={styles.tuiPaneBarLine} />
+              </div>
+              <div className={styles.tuiPaneContent}>
+                <div className={styles.tuiTabs}>
+                  <span className={styles.tuiTabActive}>AGENT OUTPUT</span>
+                  <span className={styles.tuiDim}> │ </span>
+                  <span className={styles.tuiTabInactive}>GIT DIFF</span>
+                </div>
+                <div className={styles.tuiDetailBody}>
+                  <div className={styles.tuiDim}>
+                    Agent pane is not available for this worktree.
+                  </div>
+                  <div className={styles.tuiDim}>&nbsp;</div>
+                  <div className={styles.tuiDim}>
+                    Press enter or g on the worktree list to attach.
+                  </div>
+                  <div className={styles.tuiDim}>
+                    A tmux session will open with your configured session tools.
+                  </div>
+                </div>
+              </div>
+
+              <div className={styles.tuiPaneBar}>
+                <div className={styles.tuiPaneBarLine} />
+                <span>[3]-Worktrees</span>
+                <div className={styles.tuiPaneBarLine} />
+              </div>
+              <div className={styles.tuiPaneContent}>
+                <div className={styles.tuiTableHeader}>
+                  <span>CUR</span>
+                  <span>BRANCH</span>
+                  <span>STATUS</span>
+                  <span>TMUX</span>
+                  <span>AGENT</span>
+                </div>
+                <div
+                  className={clsx(
+                    styles.tuiTableRow,
+                    styles.tuiTableRowSelected,
+                  )}
+                >
+                  <span className={styles.tuiGreen}>*</span>
+                  <span className={styles.tuiMuted}>main</span>
+                  <span className={styles.tuiRed}>dirty</span>
+                  <span className={styles.tuiRed}>no</span>
+                  <span className={styles.tuiRed}>no</span>
+                </div>
+                <div className={styles.tuiTableRow}>
+                  <span />
+                  <span className={styles.tuiMuted}>feat/checkout</span>
+                  <span className={styles.tuiRed}>dirty</span>
+                  <span className={styles.tuiGreen}>yes</span>
+                  <span className={styles.tuiGreen}>yes</span>
+                </div>
+                <div className={styles.tuiTableRow}>
+                  <span />
+                  <span className={styles.tuiMuted}>fix/auth-bug</span>
+                  <span className={styles.tuiRed}>dirty</span>
+                  <span className={styles.tuiDim}>no</span>
+                  <span className={styles.tuiDim}>no</span>
+                </div>
+                <div className={styles.tuiTableRow}>
+                  <span />
+                  <span className={styles.tuiMuted}>chore/cleanup</span>
+                  <span className={styles.tuiRed}>dirty</span>
+                  <span className={styles.tuiGreen}>yes</span>
+                  <span className={styles.tuiGreen}>yes</span>
+                </div>
+              </div>
+
+              <div className={styles.tuiBottomBar}>
+                <span className={styles.tuiDim}>
+                  └ tab cycle modal focus │ esc close modal{"  "}INFO: ready
+                </span>
+                <span className={styles.tuiDim}>1 of 4{"  "}─ main ↗</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
 function CTASection() {
   return (
     <section className={styles.ctaSection}>
@@ -752,7 +901,7 @@ function CTASection() {
         </div>
         <h2 className={styles.ctaTitle}>Stop stashing. Start sprouting.</h2>
         <p className={styles.ctaSubtitle}>
-          brew tap jgrabski/sprout &amp;&amp; brew install sprout
+          brew tap joegrabski/sprout &amp;&amp; brew install sprout
         </p>
         <div className={styles.ctaButtons}>
           <Link
@@ -764,7 +913,7 @@ function CTASection() {
           </Link>
           <Link
             className={clsx("button button--lg", styles.secondaryButton)}
-            to="https://github.com/jgrabski/sprout"
+            to="https://github.com/joegrabski/sprout"
           >
             <GitBranch size={17} />
             <span>View on GitHub</span>
@@ -785,6 +934,7 @@ export default function Home(): ReactNode {
       <main>
         <FeaturesSection />
         <DemoSection />
+        <TUISection />
         <CTASection />
       </main>
     </Layout>

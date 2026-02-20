@@ -778,6 +778,197 @@
 }
 
 /* ─────────────────────────────────────────────
+   TUI Section
+───────────────────────────────────────────── */
+.tuiSection {
+  padding: 8rem 2rem;
+  background: var(--ifm-background-color);
+  border-top: 1px solid rgba(13, 175, 98, 0.07);
+}
+
+[data-theme="dark"] .tuiSection {
+  background: #050d07;
+  border-top-color: rgba(34, 212, 122, 0.06);
+}
+
+.tuiLayout {
+  display: grid;
+  grid-template-columns: 1fr 1.6fr;
+  gap: 5rem;
+  max-width: 1040px;
+  margin: 0 auto;
+  align-items: center;
+}
+
+.tuiDescription {
+  font-size: 0.925rem;
+  color: #3a5244;
+  line-height: 1.65;
+  margin-top: 1.5rem;
+  margin-bottom: 1.75rem;
+  font-weight: 400;
+}
+
+[data-theme="dark"] .tuiDescription {
+  color: #5a7a68;
+}
+
+.tuiPoints {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.tuiPoints li {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6rem;
+  font-size: 0.875rem;
+  color: #2d4038;
+  line-height: 1.5;
+}
+
+[data-theme="dark"] .tuiPoints li {
+  color: #6a8a78;
+}
+
+.tuiPoints li::before {
+  content: "›";
+  color: var(--sprout-green);
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.tuiFrame {
+  border-radius: 10px;
+  overflow: hidden;
+  border: 1px solid rgba(13, 175, 98, 0.12);
+  box-shadow:
+    0 8px 40px rgba(0, 0, 0, 0.1),
+    0 2px 8px rgba(0, 0, 0, 0.06);
+}
+
+[data-theme="dark"] .tuiFrame {
+  border-color: rgba(34, 212, 122, 0.1);
+  box-shadow: 0 8px 40px rgba(0, 0, 0, 0.4);
+}
+
+.tuiBody {
+  background: #0d1117;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.72rem;
+  line-height: 1.55;
+  color: rgba(255, 255, 255, 0.75);
+}
+
+.tuiPaneBar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.3rem 0.75rem;
+  color: rgba(255, 255, 255, 0.2);
+  font-size: 0.62rem;
+  letter-spacing: 0.03em;
+}
+
+.tuiPaneBarLine {
+  flex: 1;
+  height: 1px;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.tuiPaneContent {
+  padding: 0.4rem 0.75rem 0.6rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+.tuiTabs {
+  margin-bottom: 0.5rem;
+}
+
+.tuiTabActive {
+  background: rgba(34, 212, 122, 0.12);
+  color: #22d47a;
+  padding: 0.1rem 0.45rem;
+  border-radius: 2px;
+  font-weight: 700;
+  font-size: 0.62rem;
+  letter-spacing: 0.05em;
+}
+
+.tuiTabInactive {
+  color: rgba(255, 255, 255, 0.25);
+  font-size: 0.62rem;
+  letter-spacing: 0.05em;
+  padding: 0.1rem 0.45rem;
+}
+
+.tuiDetailBody {
+  margin-top: 0.25rem;
+}
+
+.tuiDetailBody div {
+  font-size: 0.68rem;
+}
+
+.tuiTableHeader {
+  display: grid;
+  grid-template-columns: 2.5ch 1fr 5.5ch 4.5ch 5ch;
+  gap: 0 1ch;
+  color: rgba(255, 255, 255, 0.28);
+  font-size: 0.62rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding-bottom: 0.3rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  margin-bottom: 0.2rem;
+}
+
+.tuiTableRow {
+  display: grid;
+  grid-template-columns: 2.5ch 1fr 5.5ch 4.5ch 5ch;
+  gap: 0 1ch;
+  padding: 0.15rem 0;
+  font-size: 0.68rem;
+}
+
+.tuiTableRowSelected {
+  background: rgba(34, 212, 122, 0.05);
+  margin: 0 -0.75rem;
+  padding-left: 0.75rem;
+  padding-right: 0.75rem;
+}
+
+.tuiBottomBar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.35rem 0.75rem;
+  background: rgba(0, 0, 0, 0.25);
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
+  font-size: 0.62rem;
+}
+
+.tuiGreen {
+  color: #22d47a;
+}
+
+.tuiRed {
+  color: #e05252;
+}
+
+.tuiDim {
+  color: rgba(255, 255, 255, 0.22);
+}
+
+.tuiMuted {
+  color: rgba(255, 255, 255, 0.7);
+}
+
+/* ─────────────────────────────────────────────
    CTA
 ───────────────────────────────────────────── */
 .ctaSection {
@@ -936,6 +1127,11 @@
 
   .demoGrid {
     grid-template-columns: 1fr;
+  }
+
+  .tuiLayout {
+    grid-template-columns: 1fr;
+    gap: 3rem;
   }
 
   .ctaTitle {
