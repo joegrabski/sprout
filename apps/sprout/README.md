@@ -66,3 +66,4 @@ Zsh completion file:
 ```bash
 cp apps/sprout/completions/sprout.zsh ~/.zsh/completions/_sprout
 ```
+

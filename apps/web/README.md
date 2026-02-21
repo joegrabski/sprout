@@ -184,5 +184,3 @@ See [Docusaurus Deployment Guide](https://docusaurus.io/docs/deployment) for det
 - [Lucide Icons](https://lucide.dev/)
 - [MDX Documentation](https://mdxjs.com/)
 - [Bun Documentation](https://bun.sh/docs)
-
-

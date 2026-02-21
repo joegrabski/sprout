@@ -183,3 +183,4 @@ MIT License - see LICENSE file for details
 - [Documentation](https://sprout.dev)
 - [GitHub Issues](https://github.com/joegrabski/sprout/issues)
 - [Discussions](https://github.com/joegrabski/sprout/discussions)
+
