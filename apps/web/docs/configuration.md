@@ -14,6 +14,7 @@ Config file: `~/.config/sprout/config.toml` (override with `SPROUT_CONFIG`).
 | `worktree_root_template` | string | `../{repo}.worktrees` | `SPROUT_WORKTREE_ROOT_TEMPLATE` | Worktree directory template |
 | `auto_launch` | bool | `true` | `SPROUT_AUTO_LAUNCH` | Auto-launch tmux on new worktree |
 | `auto_start_agent` | bool | `true` | `SPROUT_AUTO_START_AGENT` | Auto-start agent on new worktree |
+| `copy_untracked_exclude` | array | `[]` | `SPROUT_COPY_UNTRACKED_EXCLUDE` | Exclude patterns when copying untracked + ignored files |
 | `session_tools` | array | `["agent","lazygit","nvim"]` | `SPROUT_SESSION_TOOLS` | Ordered tmux windows per session |
 | `agent_command` | string | `codex` | `SPROUT_AGENT_COMMAND` | Agent command |
 | `default_agent_type` | string | `codex` | `SPROUT_DEFAULT_AGENT_TYPE` | Default agent type |
@@ -27,6 +28,7 @@ base_branch = "main"
 worktree_root_template = "../{repo}.worktrees"
 auto_launch = true
 auto_start_agent = true
+copy_untracked_exclude = ["build", "dist/**"]
 session_tools = ["agent", "lazygit", "nvim", "pnpm dev"]
 default_agent_type = "codex"
 agent_command_codex = "codex"
@@ -52,3 +54,7 @@ export SPROUT_SESSION_TOOLS="agent,lazygit,nvim"
 # or
 export SPROUT_SESSION_TOOLS='["agent","lazygit","nvim","pnpm dev"]'
 ```
+
+## Update checks
+
+Sprout checks GitHub for updates once per day. Disable with `SPROUT_UPDATE_CHECK=0`.

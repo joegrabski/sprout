@@ -33,6 +33,8 @@ auto_start_agent = false
 | `worktree_root_template` | string | `../\{repo\}.worktrees` | `SPROUT_WORKTREE_ROOT_TEMPLATE` | Template for worktree root directory (\{repo\} is replaced with repo name) |
 | `auto_launch` | bool | `true` | `SPROUT_AUTO_LAUNCH` | Automatically launch tmux session when creating worktrees |
 | `auto_start_agent` | bool | `true` | `SPROUT_AUTO_START_AGENT` | Automatically start AI agent when creating worktrees |
+| `copy_untracked_exclude` | array | `[]` | `SPROUT_COPY_UNTRACKED_EXCLUDE` | Exclude patterns when copying untracked + ignored files |
+| `update_check` | bool | `true` | `SPROUT_UPDATE_CHECK` | Check GitHub for updates once per day |
 | `launch_nvim` | bool | `true` | `SPROUT_LAUNCH_NVIM` | Launch Neovim in tmux session |
 | `launch_lazygit` | bool | `true` | `SPROUT_LAUNCH_LAZYGIT` | Launch Lazygit in tmux session |
 | `agent_command` | string | `codex` | `SPROUT_AGENT_COMMAND` | Default agent command (deprecated: use default_agent_type) |
@@ -59,6 +61,12 @@ auto_launch = true
 
 # Automatically start AI agent when creating worktrees
 auto_start_agent = true
+
+# Exclude patterns when copying untracked + ignored files
+copy_untracked_exclude = ["build", "dist/**"]
+
+# Check for updates (disable with SPROUT_UPDATE_CHECK=0)
+update_check = true
 
 # Launch nvim in tmux session
 launch_nvim = true
@@ -91,6 +99,8 @@ export SPROUT_BASE_BRANCH="main"
 export SPROUT_WORKTREE_ROOT_TEMPLATE="../\{repo\}.worktrees"
 export SPROUT_AUTO_LAUNCH="true"
 export SPROUT_AUTO_START_AGENT="true"
+export SPROUT_COPY_UNTRACKED_EXCLUDE="[]"
+export SPROUT_UPDATE_CHECK="true"
 export SPROUT_LAUNCH_NVIM="true"
 export SPROUT_LAUNCH_LAZYGIT="true"
 export SPROUT_AGENT_COMMAND="codex"
@@ -119,6 +129,16 @@ When `true`, automatically creates and attaches to a tmux session when creating 
 ### auto_start_agent
 
 When `true`, automatically starts an AI agent in a tmux window when creating a new worktree.
+
+### copy_untracked_exclude
+
+Patterns to exclude when copying untracked + ignored files into a new worktree.
+
+Patterns are matched against paths relative to the repo root. Supports glob syntax like `*` and `?`. Use `dir/` or `dir/**` to exclude a directory and all of its contents.
+
+### update_check
+
+When `true`, Sprout checks GitHub for updates once per day. Disable by setting `SPROUT_UPDATE_CHECK=0`.
 
 ### launch_nvim
 

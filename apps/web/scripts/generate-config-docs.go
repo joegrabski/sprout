@@ -68,6 +68,12 @@ auto_launch = true
 # Automatically start AI agent when creating worktrees
 auto_start_agent = true
 
+# Exclude patterns when copying untracked + ignored files
+copy_untracked_exclude = ["build", "dist/**"]
+
+# Check for updates (disable with SPROUT_UPDATE_CHECK=0)
+update_check = true
+
 # Launch nvim in tmux session
 launch_nvim = true
 
@@ -117,6 +123,16 @@ When {{ backtick }}true{{ backtick }}, automatically creates and attaches to a t
 ### auto_start_agent
 
 When {{ backtick }}true{{ backtick }}, automatically starts an AI agent in a tmux window when creating a new worktree.
+
+### copy_untracked_exclude
+
+Patterns to exclude when copying untracked + ignored files into a new worktree.
+
+Patterns are matched against paths relative to the repo root. Supports glob syntax like {{ backtick }}*{{ backtick }} and {{ backtick }}?{{ backtick }}. Use {{ backtick }}dir/{{ backtick }} or {{ backtick }}dir/**{{ backtick }} to exclude a directory and all of its contents.
+
+### update_check
+
+When {{ backtick }}true{{ backtick }}, Sprout checks GitHub for updates once per day. Disable by setting {{ backtick }}SPROUT_UPDATE_CHECK=0{{ backtick }}.
 
 ### launch_nvim
 
@@ -181,6 +197,20 @@ func main() {
 			Default:     "true",
 			EnvVar:      "SPROUT_AUTO_START_AGENT",
 			Description: "Automatically start AI agent when creating worktrees",
+		},
+		{
+			Name:        "copy_untracked_exclude",
+			Type:        "array",
+			Default:     "[]",
+			EnvVar:      "SPROUT_COPY_UNTRACKED_EXCLUDE",
+			Description: "Exclude patterns when copying untracked + ignored files",
+		},
+		{
+			Name:        "update_check",
+			Type:        "bool",
+			Default:     "true",
+			EnvVar:      "SPROUT_UPDATE_CHECK",
+			Description: "Check GitHub for updates once per day",
 		},
 		{
 			Name:        "launch_nvim",

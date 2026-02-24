@@ -4,7 +4,7 @@ sidebar_position: 5
 
 # AI Agents
 
-Sprout runs AI coding agents in dedicated tmux windows within each worktree's session. Each worktree gets its own agent with independent context.
+Sprout runs AI coding agents in dedicated tmux windows within each worktree's session. Each worktree gets its own agent with independent context. The TUI reads agent output directly from the tmux pane running your agent command.
 
 ## Supported agents
 
