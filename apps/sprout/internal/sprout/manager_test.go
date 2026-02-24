@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -122,6 +123,28 @@ func TestTmuxConfiguredWindowsUniqueNames(t *testing.T) {
 	}
 }
 
+func TestResolvePaneDir(t *testing.T) {
+	worktree := "/tmp/repo.worktrees/feat/x"
+
+	got := resolvePaneDir("src/apps/web", worktree)
+	want := "/tmp/repo.worktrees/feat/x/src/apps/web"
+	if got != want {
+		t.Fatalf("resolvePaneDir relative = %q, want %q", got, want)
+	}
+
+	got = resolvePaneDir("{worktree}/src/apis", worktree)
+	want = "/tmp/repo.worktrees/feat/x/src/apis"
+	if got != want {
+		t.Fatalf("resolvePaneDir {worktree} = %q, want %q", got, want)
+	}
+
+	got = resolvePaneDir("/opt/tools", worktree)
+	want = "/opt/tools"
+	if got != want {
+		t.Fatalf("resolvePaneDir absolute = %q, want %q", got, want)
+	}
+}
+
 func TestCommandShouldRemainOnExit(t *testing.T) {
 	tests := []struct {
 		command string
@@ -141,6 +164,32 @@ func TestCommandShouldRemainOnExit(t *testing.T) {
 		got := commandShouldRemainOnExit(tc.command)
 		if got != tc.want {
 			t.Fatalf("commandShouldRemainOnExit(%q) = %t, want %t", tc.command, got, tc.want)
+		}
+	}
+}
+
+func TestCopyUntrackedExcludeMatch(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.CopyUntrackedExclude = []string{"build", "dist/**", "*.log", "tmp/"}
+	m := NewManager(cfg)
+
+	tests := []struct {
+		rel  string
+		want bool
+	}{
+		{rel: "build", want: true},
+		{rel: "build/output/app.dll", want: true},
+		{rel: "dist/assets/app.js", want: true},
+		{rel: "tmp/cache", want: true},
+		{rel: "logs/app.log", want: true},
+		{rel: "notes/logs.txt", want: false},
+		{rel: "src/build/output", want: false},
+		{rel: "builds/app", want: false},
+	}
+
+	for _, tc := range tests {
+		if got := m.shouldExcludeCopyPath(tc.rel); got != tc.want {
+			t.Fatalf("shouldExcludeCopyPath(%q) = %t, want %t", tc.rel, got, tc.want)
 		}
 	}
 }
@@ -206,6 +255,94 @@ func TestGitWorktreeCommandTimeout(t *testing.T) {
 	_ = os.Setenv("SPROUT_GIT_WORKTREE_TIMEOUT_SECONDS", "10000")
 	if got := gitWorktreeCommandTimeout(); got != 600*time.Second {
 		t.Fatalf("expected max-clamped timeout, got %s", got)
+	}
+}
+
+func TestEstimateCopyPath(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(root+"/a.txt", []byte("hello"), 0o644); err != nil {
+		t.Fatalf("write file failed: %v", err)
+	}
+	if err := os.MkdirAll(root+"/nested", 0o755); err != nil {
+		t.Fatalf("mkdir failed: %v", err)
+	}
+	if err := os.WriteFile(root+"/nested/b.txt", []byte("world!"), 0o644); err != nil {
+		t.Fatalf("write nested file failed: %v", err)
+	}
+
+	files, bytes, err := estimateCopyPath(root)
+	if err != nil {
+		t.Fatalf("estimateCopyPath failed: %v", err)
+	}
+	if files != 2 {
+		t.Fatalf("expected 2 files, got %d", files)
+	}
+	if bytes < 11 {
+		t.Fatalf("expected at least 11 bytes, got %d", bytes)
+	}
+}
+
+func TestNewWorktreeFromExistingReturnsExistingWorktreePath(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is required for this test")
+	}
+
+	parent := t.TempDir()
+	repo := filepath.Join(parent, "repo")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatalf("mkdir repo failed: %v", err)
+	}
+
+	run := func(dir string, args ...string) {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %s failed: %v: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
+		}
+	}
+
+	run(repo, "init")
+	run(repo, "config", "user.email", "sprout-test@example.com")
+	run(repo, "config", "user.name", "Sprout Test")
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatalf("write file failed: %v", err)
+	}
+	run(repo, "add", "README.md")
+	run(repo, "commit", "-m", "init")
+	run(repo, "checkout", "-b", "feature/existing")
+	run(repo, "checkout", "-")
+
+	existingPath := filepath.Join(parent, "existing-worktree")
+	run(repo, "worktree", "add", existingPath, "feature/existing")
+
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd failed: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chdir(wd)
+	})
+	if err := os.Chdir(repo); err != nil {
+		t.Fatalf("chdir failed: %v", err)
+	}
+
+	cfg := DefaultConfig()
+	m := NewManager(cfg)
+	branch, gotPath, err := m.NewWorktree(NewOptions{FromBranch: "feature/existing", Launch: false})
+	if err != nil {
+		t.Fatalf("NewWorktree failed: %v", err)
+	}
+	if branch != "feature/existing" {
+		t.Fatalf("unexpected branch: %q", branch)
+	}
+	resolve := func(p string) string {
+		if real, err := filepath.EvalSymlinks(p); err == nil {
+			return absPath(real)
+		}
+		return absPath(p)
+	}
+	if resolve(gotPath) != resolve(existingPath) {
+		t.Fatalf("expected existing path %q, got %q", resolve(existingPath), resolve(gotPath))
 	}
 }
 

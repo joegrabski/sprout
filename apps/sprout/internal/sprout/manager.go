@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -44,12 +45,32 @@ type DiffFile struct {
 }
 
 type NewOptions struct {
-	Branch     string
-	Type       string
-	Name       string
-	BaseBranch string
-	FromBranch string
-	Launch     bool
+	Branch            string
+	Type              string
+	Name              string
+	BaseBranch        string
+	FromBranch        string
+	Launch            bool
+	SkipCopyUntracked bool
+	OnCopyProgress    func(CopyProgress)
+}
+
+type CopyProgress struct {
+	Phase       string
+	CurrentPath string
+	CopiedFiles int
+	TotalFiles  int
+	CopiedBytes int64
+	TotalBytes  int64
+}
+
+type DeleteProgress struct {
+	Phase        string
+	CurrentPath  string
+	DeletedFiles int
+	TotalFiles   int
+	DeletedBytes int64
+	TotalBytes   int64
 }
 
 // BranchInfo describes a git branch available for creating a new worktree.
@@ -121,9 +142,10 @@ type AgentOptions struct {
 }
 
 type RemoveOptions struct {
-	Target       string
-	Force        bool
-	DeleteBranch bool
+	Target           string
+	Force            bool
+	DeleteBranch     bool
+	OnDeleteProgress func(DeleteProgress)
 }
 
 type Manager struct {
@@ -550,12 +572,22 @@ func (m *Manager) tmuxFocusWindow(session, window string, attachOutside bool) er
 	return nil
 }
 
+func (m *Manager) tmuxFocusSession(session string, attachOutside bool) error {
+	if os.Getenv("TMUX") != "" {
+		return runCmdQuiet("", "tmux", "switch-client", "-t", session)
+	}
+	if attachOutside {
+		return runCmdInherit("", "tmux", "attach-session", "-t", session)
+	}
+	return nil
+}
+
 // resolvePaneDir resolves a pane dir spec to an absolute path.
 // Returns "" when dir is empty (caller should use the worktree path as default).
 //   - "~" or "~/..." → expands to home directory
 //   - "{worktree}" prefix → replaced with worktreePath
 //   - Absolute path → returned as-is
-//   - Relative path → returned as-is (tmux -c accepts relative paths)
+//   - Relative path → resolved against worktreePath
 func resolvePaneDir(dir, worktreePath string) string {
 	dir = strings.TrimSpace(dir)
 	if dir == "" {
@@ -580,7 +612,10 @@ func resolvePaneDir(dir, worktreePath string) string {
 		}
 		return filepath.Join(worktreePath, rest)
 	}
-	return dir
+	if filepath.IsAbs(dir) {
+		return dir
+	}
+	return filepath.Clean(filepath.Join(worktreePath, dir))
 }
 
 // tmuxSplitFlag returns the tmux split-window flag for a given layout name.
@@ -793,6 +828,8 @@ func (m *Manager) ListWorktrees() ([]Worktree, error) {
 			items[i].TmuxState = "yes"
 			agentWindow := m.tmuxAgentWindowName(worktreeBranchOrName(&items[i]))
 			if m.tmuxWindowExists(session, agentWindow) {
+				items[i].AgentState = "yes"
+			} else if _, ok := m.findAgentPaneInSession(session); ok {
 				items[i].AgentState = "yes"
 			}
 		}
@@ -1093,6 +1130,9 @@ func (m *Manager) collectCopyCandidates(sourceRoot string) ([]string, error) {
 			if p == ".git" || strings.HasPrefix(p, ".git/") {
 				continue
 			}
+			if m.shouldExcludeCopyPath(p) {
+				continue
+			}
 			set[p] = struct{}{}
 		}
 	}
@@ -1102,6 +1142,64 @@ func (m *Manager) collectCopyCandidates(sourceRoot string) ([]string, error) {
 	}
 	sort.Strings(res)
 	return res, nil
+}
+
+func (m *Manager) shouldExcludeCopyPath(rel string) bool {
+	if len(m.Cfg.CopyUntrackedExclude) == 0 {
+		return false
+	}
+	rel = normalizeCopyMatch(rel)
+	if rel == "" {
+		return false
+	}
+	for _, raw := range m.Cfg.CopyUntrackedExclude {
+		if copyPatternMatches(rel, raw) {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeCopyMatch(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	value = filepath.ToSlash(value)
+	value = strings.TrimPrefix(value, "./")
+	value = strings.TrimSuffix(value, "/")
+	return value
+}
+
+func copyPatternMatches(rel, pattern string) bool {
+	pat := normalizeCopyMatch(pattern)
+	if pat == "" {
+		return false
+	}
+	if strings.HasSuffix(pat, "/**") {
+		base := strings.TrimSuffix(pat, "/**")
+		if base == "" {
+			return true
+		}
+		return rel == base || strings.HasPrefix(rel, base+"/")
+	}
+	if !hasGlobMeta(pat) {
+		return rel == pat || strings.HasPrefix(rel, pat+"/")
+	}
+	if ok, _ := path.Match(pat, rel); ok {
+		return true
+	}
+	if !strings.Contains(pat, "/") {
+		base := path.Base(rel)
+		if ok, _ := path.Match(pat, base); ok {
+			return true
+		}
+	}
+	return false
+}
+
+func hasGlobMeta(value string) bool {
+	return strings.ContainsAny(value, "*?[")
 }
 
 func copyFile(src, dst string, info fs.FileInfo) error {
@@ -1191,24 +1289,128 @@ func copyPath(src, dst string) error {
 	return copyFile(src, dst, info)
 }
 
-func (m *Manager) CopyUntrackedAndIgnored(sourceRoot, targetRoot string) error {
+type copyCandidate struct {
+	Rel   string
+	Src   string
+	Dst   string
+	Files int
+	Bytes int64
+}
+
+func estimateCopyPath(path string) (int, int64, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return 0, 0, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return 1, info.Size(), nil
+	}
+	if !info.IsDir() {
+		return 1, info.Size(), nil
+	}
+
+	files := 0
+	var bytes int64
+	err = filepath.WalkDir(path, func(p string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if d.IsDir() {
+			return nil
+		}
+		di, err := d.Info()
+		if err != nil {
+			return err
+		}
+		files++
+		bytes += di.Size()
+		return nil
+	})
+	return files, bytes, err
+}
+
+func (m *Manager) CopyUntrackedAndIgnored(sourceRoot, targetRoot string, onProgress func(CopyProgress)) error {
+	start := time.Now()
 	candidates, err := m.collectCopyCandidates(sourceRoot)
 	if err != nil {
 		return err
 	}
+
+	debugLogf("copy_untracked start source=%q target=%q candidates=%d", sourceRoot, targetRoot, len(candidates))
+	if onProgress != nil {
+		onProgress(CopyProgress{Phase: "scan"})
+	}
+
+	plan := make([]copyCandidate, 0, len(candidates))
+	totalFiles := 0
+	var totalBytes int64
 	for _, rel := range candidates {
 		src := filepath.Join(sourceRoot, rel)
 		dst := filepath.Join(targetRoot, rel)
-		if _, err := os.Lstat(src); err != nil {
+		files, bytes, err := estimateCopyPath(src)
+		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {
 				continue
 			}
 			return err
 		}
-		if err := copyPath(src, dst); err != nil {
-			return fmt.Errorf("copy %s: %w", rel, err)
+		plan = append(plan, copyCandidate{
+			Rel:   rel,
+			Src:   src,
+			Dst:   dst,
+			Files: files,
+			Bytes: bytes,
+		})
+		totalFiles += files
+		totalBytes += bytes
+		if onProgress != nil {
+			onProgress(CopyProgress{
+				Phase:       "scan",
+				CurrentPath: rel,
+				TotalFiles:  totalFiles,
+				TotalBytes:  totalBytes,
+			})
 		}
 	}
+
+	copiedFiles := 0
+	var copiedBytes int64
+	for _, item := range plan {
+		if onProgress != nil {
+			onProgress(CopyProgress{
+				Phase:       "copy",
+				CurrentPath: item.Rel,
+				CopiedFiles: copiedFiles,
+				TotalFiles:  totalFiles,
+				CopiedBytes: copiedBytes,
+				TotalBytes:  totalBytes,
+			})
+		}
+		if _, err := os.Lstat(item.Src); err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				totalFiles -= item.Files
+				totalBytes -= item.Bytes
+				continue
+			}
+			return err
+		}
+		if err := copyPath(item.Src, item.Dst); err != nil {
+			return fmt.Errorf("copy %s: %w", item.Rel, err)
+		}
+		copiedFiles += item.Files
+		copiedBytes += item.Bytes
+	}
+
+	if onProgress != nil {
+		onProgress(CopyProgress{
+			Phase:       "copy",
+			CopiedFiles: copiedFiles,
+			TotalFiles:  totalFiles,
+			CopiedBytes: copiedBytes,
+			TotalBytes:  totalBytes,
+		})
+	}
+	debugLogf("copy_untracked done source=%q target=%q copied=%d total=%d bytes=%d/%d dur=%s", sourceRoot, targetRoot, copiedFiles, totalFiles, copiedBytes, totalBytes, time.Since(start))
 	return nil
 }
 
@@ -1227,6 +1429,29 @@ func (m *Manager) CreateWorktreeFromExisting(repoRoot, branch, worktreePath stri
 	}
 	// If it doesn't exist locally, git might still find it in remotes if --guess-remote is on (default)
 	return m.runGitWorktreeAdd(repoRoot, worktreePath, branch)
+}
+
+func (m *Manager) findExistingWorktreePath(repoRoot, branch, desiredPath string) (string, bool, error) {
+	items, err := m.parseWorktreeList(repoRoot)
+	if err != nil {
+		return "", false, err
+	}
+	desiredAbs := absPath(desiredPath)
+	branch = strings.TrimSpace(branch)
+	branchMatch := ""
+	for _, wt := range items {
+		path := absPath(wt.Path)
+		if desiredAbs != "" && path == desiredAbs {
+			return path, true, nil
+		}
+		if branch != "" && strings.TrimSpace(wt.Branch) == branch {
+			branchMatch = path
+		}
+	}
+	if branchMatch != "" {
+		return branchMatch, true, nil
+	}
+	return "", false, nil
 }
 
 func (m *Manager) NewWorktree(opts NewOptions) (string, string, error) {
@@ -1253,9 +1478,17 @@ func (m *Manager) NewWorktree(opts NewOptions) (string, string, error) {
 
 	worktreeRoot := m.WorktreeRootDir(repoRoot)
 	worktreePath := absPath(filepath.Join(worktreeRoot, branch))
+	if existingPath, exists, findErr := m.findExistingWorktreePath(repoRoot, branch, worktreePath); findErr == nil && exists {
+		debugLogf("new_worktree existing_worktree_detected branch=%q requested_path=%q existing_path=%q", branch, worktreePath, existingPath)
+		return branch, existingPath, nil
+	}
 
 	if isExisting {
 		if err := m.CreateWorktreeFromExisting(repoRoot, branch, worktreePath); err != nil {
+			if existingPath, exists, findErr := m.findExistingWorktreePath(repoRoot, branch, worktreePath); findErr == nil && exists {
+				debugLogf("new_worktree existing_worktree_after_create_error branch=%q requested_path=%q existing_path=%q err=%v", branch, worktreePath, existingPath, err)
+				return branch, existingPath, nil
+			}
 			debugLogf("new_worktree create_worktree_from_existing failed branch=%q path=%q: %v", branch, worktreePath, err)
 			return "", "", err
 		}
@@ -1267,17 +1500,25 @@ func (m *Manager) NewWorktree(opts NewOptions) (string, string, error) {
 		}
 
 		if err := m.CreateWorktreeWithBranch(repoRoot, branch, worktreePath, base); err != nil {
+			if existingPath, exists, findErr := m.findExistingWorktreePath(repoRoot, branch, worktreePath); findErr == nil && exists {
+				debugLogf("new_worktree existing_worktree_after_create_error branch=%q requested_path=%q existing_path=%q err=%v", branch, worktreePath, existingPath, err)
+				return branch, existingPath, nil
+			}
 			debugLogf("new_worktree create_worktree failed branch=%q path=%q base=%q: %v", branch, worktreePath, base, err)
 			return "", "", err
 		}
 	}
 
 	debugLogf("new_worktree created branch=%q path=%q", branch, worktreePath)
-	if err := m.CopyUntrackedAndIgnored(repoRoot, worktreePath); err != nil {
-		debugLogf("new_worktree copy_untracked_failed path=%q: %v", worktreePath, err)
-		return "", "", err
+	if opts.SkipCopyUntracked {
+		debugLogf("new_worktree copy_untracked_skipped path=%q", worktreePath)
+	} else {
+		if err := m.CopyUntrackedAndIgnored(repoRoot, worktreePath, opts.OnCopyProgress); err != nil {
+			debugLogf("new_worktree copy_untracked_failed path=%q: %v", worktreePath, err)
+			return "", "", err
+		}
+		debugLogf("new_worktree copied_untracked path=%q", worktreePath)
 	}
-	debugLogf("new_worktree copied_untracked path=%q", worktreePath)
 
 	if opts.Launch {
 		if err := m.LaunchOrFocus(repoRoot, branch, worktreePath, true); err != nil {
@@ -1318,8 +1559,15 @@ func (m *Manager) Go(opts GoOptions) (string, error) {
 		if os.Getenv("TMUX") == "" {
 			attachOutside = opts.Attach
 		}
-		if err := m.LaunchOrFocus(repoRoot, branch, wt.Path, attachOutside); err != nil {
-			return "", err
+		session := m.tmuxWorktreeSessionNameFrom(repoRoot, branch, wt.Path)
+		if m.tmuxHasSession(session) {
+			if err := m.tmuxFocusSession(session, attachOutside); err != nil {
+				return "", err
+			}
+		} else {
+			if err := m.LaunchOrFocus(repoRoot, branch, wt.Path, attachOutside); err != nil {
+				return "", err
+			}
 		}
 	}
 
@@ -1471,6 +1719,16 @@ func (m *Manager) resolveWorktreeForTmux(target string) (string, *Worktree, erro
 func (m *Manager) agentPaneTarget(repoRoot string, wt *Worktree) string {
 	session := m.tmuxWorktreeSessionName(repoRoot, wt)
 	window := m.tmuxAgentWindowName(worktreeBranchOrName(wt))
+	if m.tmuxHasSession(session) {
+		if m.tmuxWindowExists(session, window) {
+			if target, ok := m.findAgentPaneInWindow(session, window); ok {
+				return target
+			}
+		}
+		if target, ok := m.findAgentPaneInSession(session); ok {
+			return target
+		}
+	}
 	return session + ":" + window + ".0"
 }
 
@@ -1539,6 +1797,13 @@ func (m *Manager) sendEditorKeysForWorktree(repoRoot string, wt *Worktree, keys 
 	return tmuxSendPaneKeys(m.editorPaneTarget(repoRoot, wt), keys...)
 }
 
+func (m *Manager) agentPaneActivity(repoRoot string, wt *Worktree) (int64, error) {
+	if !commandExists("tmux") {
+		return 0, errors.New("tmux is required for agent workflows")
+	}
+	return tmuxPaneActivity(m.agentPaneTarget(repoRoot, wt))
+}
+
 func (m *Manager) AgentOutput(target string, lines int) (string, error) {
 	repoRoot, wt, err := m.resolveWorktreeForTmux(target)
 	if err != nil {
@@ -1556,6 +1821,152 @@ func (m *Manager) SendAgentCommand(target, command string) (string, error) {
 		return "", err
 	}
 	return wt.Path, nil
+}
+
+type tmuxPaneInfo struct {
+	WindowName     string
+	PaneIndex      string
+	PaneID         string
+	Active         bool
+	CurrentCommand string
+	StartCommand   string
+}
+
+func (m *Manager) agentExecCandidates() map[string]struct{} {
+	candidates := map[string]struct{}{}
+	add := func(cmd string) {
+		name := strings.ToLower(strings.TrimSpace(commandExecutableName(cmd)))
+		if name == "" {
+			return
+		}
+		candidates[name] = struct{}{}
+	}
+
+	if strings.TrimSpace(m.Cfg.AgentCommand) != "" {
+		add(m.Cfg.AgentCommand)
+	} else if m.Cfg.DefaultAgentType != "" {
+		if cmd, ok := m.Cfg.AgentCommands[m.Cfg.DefaultAgentType]; ok {
+			add(cmd)
+		}
+	}
+	if len(candidates) == 0 {
+		add("codex")
+	}
+	for _, cmd := range m.Cfg.AgentCommands {
+		add(cmd)
+	}
+	return candidates
+}
+
+func listSessionPanes(session string) ([]tmuxPaneInfo, error) {
+	out, err := runCmdOutput("", "tmux", "list-panes", "-t", session, "-F", "#{window_name}\t#{pane_index}\t#{pane_id}\t#{pane_active}\t#{pane_current_command}\t#{pane_start_command}")
+	if err != nil {
+		return nil, err
+	}
+	out = strings.TrimRight(out, "\n")
+	if out == "" {
+		return nil, nil
+	}
+	lines := strings.Split(out, "\n")
+	panes := make([]tmuxPaneInfo, 0, len(lines))
+	for _, line := range lines {
+		parts := strings.SplitN(line, "\t", 6)
+		if len(parts) < 6 {
+			continue
+		}
+		panes = append(panes, tmuxPaneInfo{
+			WindowName:     parts[0],
+			PaneIndex:      parts[1],
+			PaneID:         parts[2],
+			Active:         parts[3] == "1",
+			CurrentCommand: parts[4],
+			StartCommand:   parts[5],
+		})
+	}
+	return panes, nil
+}
+
+func matchesAgentCommand(pane tmuxPaneInfo, candidates map[string]struct{}) bool {
+	current := strings.ToLower(strings.TrimSpace(commandExecutableName(pane.CurrentCommand)))
+	if current != "" {
+		if _, ok := candidates[current]; ok {
+			return true
+		}
+	}
+	start := strings.ToLower(strings.TrimSpace(commandExecutableName(pane.StartCommand)))
+	if start != "" {
+		if _, ok := candidates[start]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *Manager) findAgentPaneInWindow(session, window string) (string, bool) {
+	panes, err := listSessionPanes(session)
+	if err != nil {
+		return "", false
+	}
+	candidates := m.agentExecCandidates()
+	var fallback *tmuxPaneInfo
+	var match *tmuxPaneInfo
+	for i := range panes {
+		pane := &panes[i]
+		if pane.WindowName != window {
+			continue
+		}
+		if pane.Active {
+			fallback = pane
+		}
+		if matchesAgentCommand(*pane, candidates) {
+			if pane.Active {
+				return pane.PaneID, true
+			}
+			if match == nil {
+				match = pane
+			}
+		}
+	}
+	if match != nil {
+		return match.PaneID, true
+	}
+	if fallback != nil {
+		return fallback.PaneID, true
+	}
+	return "", false
+}
+
+func (m *Manager) findAgentPaneInSession(session string) (string, bool) {
+	panes, err := listSessionPanes(session)
+	if err != nil {
+		return "", false
+	}
+	candidates := m.agentExecCandidates()
+	var fallback *tmuxPaneInfo
+	var match *tmuxPaneInfo
+	for i := range panes {
+		pane := &panes[i]
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(pane.WindowName)), "agent") {
+			if fallback == nil || pane.Active {
+				fallback = pane
+			}
+		}
+		if matchesAgentCommand(*pane, candidates) {
+			if pane.Active {
+				return pane.PaneID, true
+			}
+			if match == nil {
+				match = pane
+			}
+		}
+	}
+	if match != nil {
+		return match.PaneID, true
+	}
+	if fallback != nil {
+		return fallback.PaneID, true
+	}
+	return "", false
 }
 
 func (m *Manager) tmuxPaneByCommand(session, window, paneCommand string) (string, bool, error) {
@@ -1707,6 +2118,21 @@ func tmuxCapturePaneWithCursor(paneTarget string, lines int) (string, error) {
 	}
 	rows[targetRow] = overlayCursorInANSILine(rows[targetRow], cursorX)
 	return strings.Join(rows, "\n"), nil
+}
+
+func tmuxPaneActivity(paneTarget string) (int64, error) {
+	if strings.TrimSpace(paneTarget) == "" {
+		return 0, errors.New("pane target cannot be empty")
+	}
+	out, err := runCmdOutput("", "tmux", "display-message", "-p", "-t", paneTarget, "#{pane_activity}")
+	if err != nil {
+		return 0, err
+	}
+	out = strings.TrimSpace(out)
+	if out == "" {
+		return 0, errors.New("missing tmux pane activity")
+	}
+	return strconv.ParseInt(out, 10, 64)
 }
 
 func overlayCursorInANSILine(line string, cursorCol int) string {
@@ -1929,19 +2355,31 @@ func (m *Manager) Remove(opts RemoveOptions) (string, []string, error) {
 		}
 	}
 
-	if err := m.runGitWorktreeRemove(repoRoot, wt.Path, opts.Force); err != nil {
-		if shouldRetryWorktreeRemove(err) {
-			_ = runCmdQuiet(repoRoot, "git", "worktree", "prune")
-			if session != "" && m.tmuxHasSession(session) {
-				_ = runCmdQuiet("", "tmux", "kill-session", "-t", session)
-			}
-			if retryErr := m.runGitWorktreeRemove(repoRoot, wt.Path, opts.Force); retryErr == nil {
-				warnings = append(warnings, "worktree removal required a retry after cleanup")
-			} else {
-				return "", warnings, retryErr
-			}
-		} else {
+	if opts.OnDeleteProgress != nil {
+		if err := m.removeWorktreeWithProgress(repoRoot, wt.Path, opts.OnDeleteProgress); err != nil {
 			return "", warnings, err
+		}
+	} else {
+		if err := m.runGitWorktreeRemove(repoRoot, wt.Path, opts.Force); err != nil {
+			if shouldRetryWorktreeRemove(err) {
+				_ = runCmdQuiet(repoRoot, "git", "worktree", "prune")
+				if session != "" && m.tmuxHasSession(session) {
+					_ = runCmdQuiet("", "tmux", "kill-session", "-t", session)
+				}
+				if retryErr := m.runGitWorktreeRemove(repoRoot, wt.Path, opts.Force); retryErr == nil {
+					warnings = append(warnings, "worktree removal required a retry after cleanup")
+				} else {
+					return "", warnings, retryErr
+				}
+			} else {
+				return "", warnings, err
+			}
+		}
+	}
+
+	if opts.OnDeleteProgress != nil {
+		if err := runCmdQuiet(repoRoot, "git", "worktree", "prune"); err != nil {
+			warnings = append(warnings, fmt.Sprintf("worktree prune failed after removal: %v", err))
 		}
 	}
 
@@ -1963,6 +2401,126 @@ func (m *Manager) Remove(opts RemoveOptions) (string, []string, error) {
 	}
 
 	return wt.Path, warnings, nil
+}
+
+type deleteItem struct {
+	Rel   string
+	Path  string
+	Bytes int64
+}
+
+func collectDeletePlan(root string) ([]deleteItem, []string, int, int64, error) {
+	info, err := os.Lstat(root)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil, 0, 0, nil
+		}
+		return nil, nil, 0, 0, err
+	}
+	if !info.IsDir() {
+		return []deleteItem{{Rel: filepath.Base(root), Path: root, Bytes: info.Size()}}, []string{}, 1, info.Size(), nil
+	}
+
+	items := []deleteItem{}
+	dirs := []string{}
+	totalFiles := 0
+	var totalBytes int64
+
+	err = filepath.WalkDir(root, func(path string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			if errors.Is(walkErr, os.ErrNotExist) {
+				return nil
+			}
+			return walkErr
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		if rel == "." {
+			return nil
+		}
+		if d.IsDir() {
+			dirs = append(dirs, path)
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		size := info.Size()
+		items = append(items, deleteItem{
+			Rel:   filepath.ToSlash(rel),
+			Path:  path,
+			Bytes: size,
+		})
+		totalFiles++
+		totalBytes += size
+		return nil
+	})
+	if err != nil {
+		return nil, nil, 0, 0, err
+	}
+	return items, dirs, totalFiles, totalBytes, nil
+}
+
+func (m *Manager) removeWorktreeWithProgress(repoRoot, worktreePath string, onProgress func(DeleteProgress)) error {
+	start := time.Now()
+	if onProgress != nil {
+		onProgress(DeleteProgress{Phase: "scan"})
+	}
+	items, dirs, totalFiles, totalBytes, err := collectDeletePlan(worktreePath)
+	if err != nil {
+		return err
+	}
+	if onProgress != nil {
+		onProgress(DeleteProgress{Phase: "scan", TotalFiles: totalFiles, TotalBytes: totalBytes})
+	}
+
+	deletedFiles := 0
+	var deletedBytes int64
+	lastUpdate := time.Time{}
+	for _, item := range items {
+		if onProgress != nil {
+			now := time.Now()
+			if deletedFiles == totalFiles || lastUpdate.IsZero() || now.Sub(lastUpdate) >= 120*time.Millisecond {
+				onProgress(DeleteProgress{
+					Phase:        "delete",
+					CurrentPath:  item.Rel,
+					DeletedFiles: deletedFiles,
+					TotalFiles:   totalFiles,
+					DeletedBytes: deletedBytes,
+					TotalBytes:   totalBytes,
+				})
+				lastUpdate = now
+			}
+		}
+		if err := os.Remove(item.Path); err != nil {
+			if !errors.Is(err, os.ErrNotExist) {
+				return fmt.Errorf("delete %s: %w", item.Rel, err)
+			}
+		} else {
+			deletedFiles++
+			deletedBytes += item.Bytes
+		}
+	}
+
+	for i := len(dirs) - 1; i >= 0; i-- {
+		_ = os.Remove(dirs[i])
+	}
+	_ = os.Remove(worktreePath)
+
+	if onProgress != nil {
+		onProgress(DeleteProgress{
+			Phase:        "delete",
+			DeletedFiles: deletedFiles,
+			TotalFiles:   totalFiles,
+			DeletedBytes: deletedBytes,
+			TotalBytes:   totalBytes,
+		})
+	}
+	debugLogf("remove_worktree delete done path=%q deleted=%d total=%d bytes=%d/%d dur=%s", worktreePath, deletedFiles, totalFiles, deletedBytes, totalBytes, time.Since(start))
+	return nil
 }
 
 type DoctorReport struct {

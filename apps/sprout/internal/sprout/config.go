@@ -33,7 +33,7 @@ type WindowConfig struct {
 
 // PaneConfig defines a single tmux pane within a window.
 type PaneConfig struct {
-	Dir string `toml:"dir"` // working dir: abs path, ~/..., {worktree}/..., or empty for worktree root
+	Dir string `toml:"dir"` // working dir: abs path, ~/..., {worktree}/..., relative-to-worktree, or empty for worktree root
 	Run string `toml:"run"` // command to execute
 }
 
@@ -42,6 +42,8 @@ type Config struct {
 	WorktreeRootTemplate string
 	AutoLaunch           bool
 	AutoStartAgent       bool
+	CopyUntrackedExclude []string
+	UpdateCheck          bool
 	SessionTools         []string
 	LaunchNvim           bool
 	LaunchLazygit        bool
@@ -60,6 +62,8 @@ func DefaultConfig() Config {
 		WorktreeRootTemplate: "../{repo}.worktrees",
 		AutoLaunch:           true,
 		AutoStartAgent:       true,
+		CopyUntrackedExclude: []string{},
+		UpdateCheck:          true,
 		SessionTools:         defaultSessionTools(),
 		LaunchNvim:           true,
 		LaunchLazygit:        true,
@@ -193,6 +197,18 @@ func parseTOMLFlat(path string, cfg *Config) error {
 				return fmt.Errorf("%s:%d invalid auto_start_agent: %w", path, lineNum, err)
 			}
 			cfg.AutoStartAgent = v
+		case "copy_untracked_exclude":
+			v, err := parseStringArray(value)
+			if err != nil {
+				return fmt.Errorf("%s:%d invalid copy_untracked_exclude: %w", path, lineNum, err)
+			}
+			cfg.CopyUntrackedExclude = v
+		case "update_check":
+			v, err := parseBool(value)
+			if err != nil {
+				return fmt.Errorf("%s:%d invalid update_check: %w", path, lineNum, err)
+			}
+			cfg.UpdateCheck = v
 		case "session_tools":
 			v, err := parseStringArray(value)
 			if err != nil {
@@ -264,7 +280,7 @@ func parseTOMLFlat(path string, cfg *Config) error {
 						cfg.SessionLayouts = map[string]SessionLayout{}
 					}
 					layout := cfg.SessionLayouts[repo]
-					
+
 					// Find or create window
 					winIdx := -1
 					for i, w := range layout.Windows {
@@ -502,6 +518,26 @@ func parseSessionToolsEnv(value string) ([]string, error) {
 	return tools, nil
 }
 
+func parseStringListEnv(value string) ([]string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return []string{}, nil
+	}
+	if strings.HasPrefix(value, "[") {
+		return parseStringArray(value)
+	}
+	parts := strings.Split(value, ",")
+	items := make([]string, 0, len(parts))
+	for _, part := range parts {
+		item := strings.TrimSpace(part)
+		if item == "" {
+			continue
+		}
+		items = append(items, item)
+	}
+	return items, nil
+}
+
 func applyEnvOverrides(cfg *Config) {
 	if v := os.Getenv("SPROUT_BASE_BRANCH"); v != "" {
 		cfg.BaseBranch = v
@@ -517,6 +553,16 @@ func applyEnvOverrides(cfg *Config) {
 	if v := os.Getenv("SPROUT_AUTO_START_AGENT"); v != "" {
 		if b, err := parseBool(v); err == nil {
 			cfg.AutoStartAgent = b
+		}
+	}
+	if v := os.Getenv("SPROUT_UPDATE_CHECK"); v != "" {
+		if b, err := parseBool(v); err == nil {
+			cfg.UpdateCheck = b
+		}
+	}
+	if v := os.Getenv("SPROUT_COPY_UNTRACKED_EXCLUDE"); v != "" {
+		if items, err := parseStringListEnv(v); err == nil {
+			cfg.CopyUntrackedExclude = items
 		}
 	}
 	if v := os.Getenv("SPROUT_LAUNCH_NVIM"); v != "" {
@@ -578,8 +624,8 @@ func parseTOMLStructured(path string, cfg *Config, repoName string, isRepoConfig
 		Windows []WindowConfig `toml:"windows"`
 	}
 	type rawFile struct {
-		Windows []WindowConfig       `toml:"windows"`
-		Repos   map[string]rawRepo   `toml:"repos"`
+		Windows []WindowConfig     `toml:"windows"`
+		Repos   map[string]rawRepo `toml:"repos"`
 	}
 
 	var raw rawFile
