@@ -18,13 +18,13 @@ html {
 /* ── Design tokens ──────────────────────────────── */
 :root {
   /* Sprout primary - fresh growth green */
-  --ifm-color-primary: #0daf62;
-  --ifm-color-primary-dark: #0b9e58;
-  --ifm-color-primary-darker: #0a8d4e;
-  --ifm-color-primary-darkest: #077040;
-  --ifm-color-primary-light: #13c26d;
-  --ifm-color-primary-lighter: #22d47d;
-  --ifm-color-primary-lightest: #48e394;
+  --ifm-color-primary: #2b8f66;
+  --ifm-color-primary-dark: #257e5b;
+  --ifm-color-primary-darker: #216f51;
+  --ifm-color-primary-darkest: #1a583f;
+  --ifm-color-primary-light: #349f74;
+  --ifm-color-primary-lighter: #45b085;
+  --ifm-color-primary-lightest: #6cc3a3;
 
   /* Brand tokens */
   --sprout-green: #0daf62;
@@ -45,8 +45,8 @@ html {
   --docusaurus-highlighted-code-line-bg: rgba(13, 175, 98, 0.1);
 
   /* Backgrounds */
-  --ifm-background-color: #fafbfb;
-  --ifm-background-surface-color: #ffffff;
+  --ifm-background-color: #f2fbf4;
+  --ifm-background-surface-color: #f8fff9;
 
   /* Emphasis scale */
   --ifm-color-emphasis-0: #000000;
@@ -76,13 +76,13 @@ html {
 
 /* ── Dark mode ──────────────────────────────────── */
 [data-theme="dark"] {
-  --ifm-color-primary: #22d47a;
-  --ifm-color-primary-dark: #17c46d;
-  --ifm-color-primary-darker: #12b162;
-  --ifm-color-primary-darkest: #0d8e4e;
-  --ifm-color-primary-light: #34e288;
-  --ifm-color-primary-lighter: #48ec96;
-  --ifm-color-primary-lightest: #68f2aa;
+  --ifm-color-primary: #4fb98a;
+  --ifm-color-primary-dark: #43a87c;
+  --ifm-color-primary-darker: #3a976f;
+  --ifm-color-primary-darkest: #2b7959;
+  --ifm-color-primary-light: #62c89a;
+  --ifm-color-primary-lighter: #77d3aa;
+  --ifm-color-primary-lightest: #9be2c2;
 
   --sprout-green: #22d47a;
   --sprout-green-vivid: #34e288;
@@ -91,8 +91,8 @@ html {
 
   --docusaurus-highlighted-code-line-bg: rgba(34, 212, 122, 0.1);
 
-  --ifm-background-color: #0d0f0e;
-  --ifm-background-surface-color: #121413;
+  --ifm-background-color: #0c100d;
+  --ifm-background-surface-color: #101513;
 
   --ifm-color-emphasis-0: #ffffff;
   --ifm-color-emphasis-100: #f0fdf4;
