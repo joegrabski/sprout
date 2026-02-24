@@ -1,10 +1,12 @@
 package sprout
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestSlugify(t *testing.T) {
@@ -117,6 +119,93 @@ func TestTmuxConfiguredWindowsUniqueNames(t *testing.T) {
 	}
 	if windows[1].Name != "tool-npm-2" {
 		t.Fatalf("unexpected second window name: %q", windows[1].Name)
+	}
+}
+
+func TestCommandShouldRemainOnExit(t *testing.T) {
+	tests := []struct {
+		command string
+		want    bool
+	}{
+		{command: "", want: false},
+		{command: "bash", want: false},
+		{command: "/bin/zsh -l", want: false},
+		{command: "fish", want: false},
+		{command: "nvim .", want: true},
+		{command: "lazygit -p .", want: true},
+		{command: "pnpm dev", want: true},
+		{command: "codex --full-auto", want: true},
+	}
+
+	for _, tc := range tests {
+		got := commandShouldRemainOnExit(tc.command)
+		if got != tc.want {
+			t.Fatalf("commandShouldRemainOnExit(%q) = %t, want %t", tc.command, got, tc.want)
+		}
+	}
+}
+
+func TestShouldRetryWorktreeAdd(t *testing.T) {
+	tests := []struct {
+		msg  string
+		want bool
+	}{
+		{msg: "git worktree add timed out after 45s", want: true},
+		{msg: "fatal: branch is already checked out at '/tmp/wt'", want: true},
+		{msg: "fatal: cannot lock ref", want: true},
+		{msg: "fatal: invalid reference", want: false},
+	}
+
+	for _, tc := range tests {
+		got := shouldRetryWorktreeAdd(errors.New(tc.msg))
+		if got != tc.want {
+			t.Fatalf("shouldRetryWorktreeAdd(%q) = %t, want %t", tc.msg, got, tc.want)
+		}
+	}
+}
+
+func TestShouldRetryWorktreeRemove(t *testing.T) {
+	tests := []struct {
+		msg  string
+		want bool
+	}{
+		{msg: "git worktree remove timed out after 45s", want: true},
+		{msg: "fatal: '/tmp/wt' is locked", want: true},
+		{msg: "fatal: cannot lock ref", want: true},
+		{msg: "fatal: not a working tree", want: false},
+	}
+
+	for _, tc := range tests {
+		got := shouldRetryWorktreeRemove(errors.New(tc.msg))
+		if got != tc.want {
+			t.Fatalf("shouldRetryWorktreeRemove(%q) = %t, want %t", tc.msg, got, tc.want)
+		}
+	}
+}
+
+func TestGitWorktreeCommandTimeout(t *testing.T) {
+	orig := os.Getenv("SPROUT_GIT_WORKTREE_TIMEOUT_SECONDS")
+	t.Cleanup(func() {
+		if orig == "" {
+			_ = os.Unsetenv("SPROUT_GIT_WORKTREE_TIMEOUT_SECONDS")
+		} else {
+			_ = os.Setenv("SPROUT_GIT_WORKTREE_TIMEOUT_SECONDS", orig)
+		}
+	})
+
+	_ = os.Setenv("SPROUT_GIT_WORKTREE_TIMEOUT_SECONDS", "2")
+	if got := gitWorktreeCommandTimeout(); got != 5*time.Second {
+		t.Fatalf("expected min-clamped timeout, got %s", got)
+	}
+
+	_ = os.Setenv("SPROUT_GIT_WORKTREE_TIMEOUT_SECONDS", "120")
+	if got := gitWorktreeCommandTimeout(); got != 120*time.Second {
+		t.Fatalf("expected explicit timeout, got %s", got)
+	}
+
+	_ = os.Setenv("SPROUT_GIT_WORKTREE_TIMEOUT_SECONDS", "10000")
+	if got := gitWorktreeCommandTimeout(); got != 600*time.Second {
+		t.Fatalf("expected max-clamped timeout, got %s", got)
 	}
 }
 

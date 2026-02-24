@@ -2,6 +2,7 @@ package sprout
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -386,6 +387,22 @@ func commandExecutableName(command string) string {
 	return filepath.Base(parts[0])
 }
 
+func commandShouldRemainOnExit(command string) bool {
+	execName := strings.ToLower(strings.TrimSpace(commandExecutableName(command)))
+	if execName == "" {
+		return false
+	}
+	switch execName {
+	case "bash", "zsh", "fish", "sh", "dash", "ksh", "csh", "tcsh":
+		return false
+	}
+	return true
+}
+
+func (m *Manager) tmuxSetRemainOnExit(session, window string) error {
+	return runCmdQuiet("", "tmux", "set-window-option", "-t", session+":"+window, "remain-on-exit", "on")
+}
+
 type tmuxWindowSpec struct {
 	Name    string
 	Command string
@@ -492,7 +509,13 @@ func (m *Manager) tmuxEnsureSession(session, repoRoot, initialWindow, initialCom
 	if command == "" {
 		command = defaultShellCommand()
 	}
-	return runCmdQuiet("", "tmux", "new-session", "-d", "-s", session, "-n", window, "-c", repoRoot, command)
+	if err := runCmdQuiet("", "tmux", "new-session", "-d", "-s", session, "-n", window, "-c", repoRoot, command); err != nil {
+		return err
+	}
+	if commandShouldRemainOnExit(command) {
+		return m.tmuxSetRemainOnExit(session, window)
+	}
+	return nil
 }
 
 func (m *Manager) tmuxEnsureWindow(session, window, worktreePath, command string) error {
@@ -503,7 +526,13 @@ func (m *Manager) tmuxEnsureWindow(session, window, worktreePath, command string
 	if cmd == "" {
 		cmd = defaultShellCommand()
 	}
-	return runCmdQuiet("", "tmux", "new-window", "-d", "-t", session, "-n", window, "-c", worktreePath, cmd)
+	if err := runCmdQuiet("", "tmux", "new-window", "-d", "-t", session, "-n", window, "-c", worktreePath, cmd); err != nil {
+		return err
+	}
+	if commandShouldRemainOnExit(cmd) {
+		return m.tmuxSetRemainOnExit(session, window)
+	}
+	return nil
 }
 
 func (m *Manager) tmuxFocusWindow(session, window string, attachOutside bool) error {
@@ -1040,7 +1069,7 @@ func (m *Manager) CreateWorktreeWithBranch(repoRoot, branch, worktreePath, baseB
 	if err := os.MkdirAll(filepath.Dir(worktreePath), 0o755); err != nil {
 		return err
 	}
-	return runCmdQuiet(repoRoot, "git", "worktree", "add", "-b", branch, worktreePath, baseBranch)
+	return m.runGitWorktreeAdd(repoRoot, "-b", branch, worktreePath, baseBranch)
 }
 
 func (m *Manager) collectCopyCandidates(sourceRoot string) ([]string, error) {
@@ -1194,10 +1223,10 @@ func (m *Manager) CreateWorktreeFromExisting(repoRoot, branch, worktreePath stri
 	}
 	// Try local branch first, then remote
 	if m.BranchExists(repoRoot, branch) {
-		return runCmdQuiet(repoRoot, "git", "worktree", "add", worktreePath, branch)
+		return m.runGitWorktreeAdd(repoRoot, worktreePath, branch)
 	}
 	// If it doesn't exist locally, git might still find it in remotes if --guess-remote is on (default)
-	return runCmdQuiet(repoRoot, "git", "worktree", "add", worktreePath, branch)
+	return m.runGitWorktreeAdd(repoRoot, worktreePath, branch)
 }
 
 func (m *Manager) NewWorktree(opts NewOptions) (string, string, error) {
@@ -1889,20 +1918,30 @@ func (m *Manager) Remove(opts RemoveOptions) (string, []string, error) {
 		return "", nil, fmt.Errorf("worktree has uncommitted changes: %s (use --force to override)", wt.Path)
 	}
 
-	args := []string{"worktree", "remove"}
-	if opts.Force {
-		args = append(args, "--force")
-	}
-	args = append(args, wt.Path)
-	if err := runCmdQuiet(repoRoot, "git", args...); err != nil {
-		return "", nil, err
+	warnings := []string{}
+	session := ""
+	if commandExists("tmux") {
+		session = m.tmuxWorktreeSessionName(repoRoot, wt)
+		if m.tmuxHasSession(session) {
+			if err := runCmdQuiet("", "tmux", "kill-session", "-t", session); err != nil {
+				warnings = append(warnings, fmt.Sprintf("unable to stop tmux session %s before removal: %v", session, err))
+			}
+		}
 	}
 
-	warnings := []string{}
-	if commandExists("tmux") {
-		session := m.tmuxWorktreeSessionName(repoRoot, wt)
-		if m.tmuxHasSession(session) {
-			_ = runCmdQuiet("", "tmux", "kill-session", "-t", session)
+	if err := m.runGitWorktreeRemove(repoRoot, wt.Path, opts.Force); err != nil {
+		if shouldRetryWorktreeRemove(err) {
+			_ = runCmdQuiet(repoRoot, "git", "worktree", "prune")
+			if session != "" && m.tmuxHasSession(session) {
+				_ = runCmdQuiet("", "tmux", "kill-session", "-t", session)
+			}
+			if retryErr := m.runGitWorktreeRemove(repoRoot, wt.Path, opts.Force); retryErr == nil {
+				warnings = append(warnings, "worktree removal required a retry after cleanup")
+			} else {
+				return "", warnings, retryErr
+			}
+		} else {
+			return "", warnings, err
 		}
 	}
 
@@ -2011,9 +2050,24 @@ func (m *Manager) Doctor() DoctorReport {
 }
 
 func runCmdBytes(dir, name string, args ...string) ([]byte, error) {
+	return runCmdBytesWithTimeout(dir, 0, name, args...)
+}
+
+func runCmdBytesWithTimeout(dir string, timeout time.Duration, name string, args ...string) ([]byte, error) {
 	start := time.Now()
-	debugLogf("cmd start dir=%q name=%q args=%q", dir, name, strings.Join(args, " "))
-	cmd := exec.Command(name, args...)
+	timeoutInfo := ""
+	if timeout > 0 {
+		timeoutInfo = fmt.Sprintf(" timeout=%s", timeout)
+	}
+	debugLogf("cmd start dir=%q name=%q args=%q%s", dir, name, strings.Join(args, " "), timeoutInfo)
+	ctx := context.Background()
+	cancel := func() {}
+	if timeout > 0 {
+		ctx, cancel = context.WithTimeout(context.Background(), timeout)
+	}
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, name, args...)
 	if dir != "" {
 		cmd.Dir = dir
 	}
@@ -2025,6 +2079,12 @@ func runCmdBytes(dir, name string, args ...string) ([]byte, error) {
 			trimmed = trimmed[:600] + "...(truncated)"
 		}
 		debugLogf("cmd fail dur=%s dir=%q name=%q args=%q err=%v out=%q", elapsed, dir, name, strings.Join(args, " "), err, trimmed)
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			if trimmed != "" {
+				return nil, fmt.Errorf("%s %s timed out after %s: %s", name, strings.Join(args, " "), timeout, trimmed)
+			}
+			return nil, fmt.Errorf("%s %s timed out after %s", name, strings.Join(args, " "), timeout)
+		}
 		if trimmed != "" {
 			return nil, fmt.Errorf("%s %s failed: %w: %s", name, strings.Join(args, " "), err, trimmed)
 		}
@@ -2113,6 +2173,103 @@ func runCmdOutputAllowExitCodes(dir string, allowedExitCodes []int, name string,
 func runCmdQuiet(dir, name string, args ...string) error {
 	_, err := runCmdBytes(dir, name, args...)
 	return err
+}
+
+func runCmdQuietTimeout(dir string, timeout time.Duration, name string, args ...string) error {
+	_, err := runCmdBytesWithTimeout(dir, timeout, name, args...)
+	return err
+}
+
+func gitWorktreeCommandTimeout() time.Duration {
+	const (
+		defaultSeconds = 45
+		minSeconds     = 5
+		maxSeconds     = 600
+	)
+	raw := strings.TrimSpace(os.Getenv("SPROUT_GIT_WORKTREE_TIMEOUT_SECONDS"))
+	if raw == "" {
+		return defaultSeconds * time.Second
+	}
+	seconds, err := strconv.Atoi(raw)
+	if err != nil {
+		return defaultSeconds * time.Second
+	}
+	if seconds < minSeconds {
+		seconds = minSeconds
+	}
+	if seconds > maxSeconds {
+		seconds = maxSeconds
+	}
+	return time.Duration(seconds) * time.Second
+}
+
+func shouldRetryWorktreeAdd(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(msg, "timed out"):
+		return true
+	case strings.Contains(msg, "already checked out"):
+		return true
+	case strings.Contains(msg, "already exists"):
+		return true
+	case strings.Contains(msg, "already registered"):
+		return true
+	case strings.Contains(msg, "unable to create"):
+		return true
+	case strings.Contains(msg, "cannot lock"):
+		return true
+	default:
+		return false
+	}
+}
+
+func shouldRetryWorktreeRemove(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(msg, "timed out"):
+		return true
+	case strings.Contains(msg, "is locked"):
+		return true
+	case strings.Contains(msg, "cannot remove"):
+		return true
+	case strings.Contains(msg, "cannot lock"):
+		return true
+	default:
+		return false
+	}
+}
+
+func (m *Manager) runGitWorktreeAdd(repoRoot string, args ...string) error {
+	allArgs := append([]string{"worktree", "add"}, args...)
+	timeout := gitWorktreeCommandTimeout()
+	if err := runCmdQuietTimeout(repoRoot, timeout, "git", allArgs...); err != nil {
+		if shouldRetryWorktreeAdd(err) {
+			_ = runCmdQuiet(repoRoot, "git", "worktree", "prune")
+			if retryErr := runCmdQuietTimeout(repoRoot, timeout, "git", allArgs...); retryErr == nil {
+				return nil
+			} else {
+				return retryErr
+			}
+		}
+		return err
+	}
+	return nil
+}
+
+func (m *Manager) runGitWorktreeRemove(repoRoot, worktreePath string, force bool) error {
+	args := []string{"worktree", "remove"}
+	if force {
+		args = append(args, "--force")
+	}
+	args = append(args, worktreePath)
+	timeout := gitWorktreeCommandTimeout()
+	return runCmdQuietTimeout(repoRoot, timeout, "git", args...)
 }
 
 func runCmdInherit(dir, name string, args ...string) error {
