@@ -1,5 +1,6 @@
 import React, { ReactNode } from "react";
 import { GitBranch, Terminal, Zap } from "lucide-react";
+import { DitheredBackdrop } from "./DitheredBackdrop";
 import styles from "../../pages/index.module.css";
 
 type DemoCardProps = {
@@ -10,28 +11,31 @@ type DemoCardProps = {
 
 function DemoCard({ icon: Icon, title, children }: DemoCardProps) {
   return (
-    <div className={styles.demoCard}>
-      <div className={styles.terminalChrome}>
-        <div className={styles.terminalDots}>
-          <span
-            className={styles.terminalDot}
-            style={{ background: "#ff5f57" }}
-          />
-          <span
-            className={styles.terminalDot}
-            style={{ background: "#febc2e" }}
-          />
-          <span
-            className={styles.terminalDot}
-            style={{ background: "#28c840" }}
-          />
+    <div className={`${styles.demoCard} ${styles.voxelSurface}`}>
+      <DitheredBackdrop className={styles.ditherEdge} variant="section" />
+      <div className={styles.voxelInner}>
+        <div className={styles.terminalChrome}>
+          <div className={styles.terminalDots}>
+            <span
+              className={styles.terminalDot}
+              style={{ background: "#ff5f57" }}
+            />
+            <span
+              className={styles.terminalDot}
+              style={{ background: "#febc2e" }}
+            />
+            <span
+              className={styles.terminalDot}
+              style={{ background: "#28c840" }}
+            />
+          </div>
+          <div className={styles.terminalWindowTitle}>
+            <Icon size={12} />
+            <span>{title}</span>
+          </div>
         </div>
-        <div className={styles.terminalWindowTitle}>
-          <Icon size={12} />
-          <span>{title}</span>
-        </div>
+        <div className={styles.terminalBody}>{children}</div>
       </div>
-      <div className={styles.terminalBody}>{children}</div>
     </div>
   );
 }
@@ -40,7 +44,7 @@ export function DemoSection() {
   return (
     <section className={styles.demoSection}>
       <div className="container">
-        <div className={styles.demoHeader}>
+        <div className={styles.demoHeader} data-anim>
           <div className={styles.demoHeaderLeft}>
             <span className={styles.sectionLabel}>In practice</span>
             <h2 className={styles.sectionTitle}>A few commands.</h2>
@@ -50,7 +54,7 @@ export function DemoSection() {
           </p>
         </div>
 
-        <div className={styles.demoGrid}>
+        <div className={styles.demoGrid} data-anim>
           <DemoCard icon={GitBranch} title="create a worktree">
             <div className={styles.terminalLine}>
               <span className={styles.terminalPrompt}>$</span>

@@ -461,7 +461,7 @@ export function HomepageHeader() {
       <GitWorktreeBackground />
 
       <div className="container">
-        <div className={styles.heroContent}>
+        <div className={styles.heroContent} data-anim>
           <div className={styles.badge}>
             <Sprout size={13} />
             <span>Open Source • Built for the Terminal</span>

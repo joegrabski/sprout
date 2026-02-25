@@ -1,4 +1,5 @@
 import React from "react";
+import { DitheredBackdrop } from "./DitheredBackdrop";
 import styles from "../../pages/index.module.css";
 
 const FEATURES = [
@@ -54,7 +55,9 @@ export function FeaturesSection() {
               Sprout handles the overhead so you stay in flow.
             </p>
           </div>
-          <div className={styles.featuresGrid}>
+          <div className={`${styles.featuresGrid} ${styles.voxelSurface}`} data-anim>
+            <DitheredBackdrop className={styles.ditherEdge} variant="section" />
+            <div className={styles.voxelInner}>
             {FEATURES.map((f) => (
               <div key={f.n} className={styles.featureItem}>
                 <span className={styles.featureNum}>{f.n}</span>
@@ -62,6 +65,7 @@ export function FeaturesSection() {
                 <p className={styles.featureDescription}>{f.description}</p>
               </div>
             ))}
+            </div>
           </div>
         </div>
       </div>

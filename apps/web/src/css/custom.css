@@ -1,4 +1,4 @@
-@import url("https://fonts.googleapis.com/css2?family=Inter:ital,wght@0,400;0,500;0,600;0,700;0,800;0,900;1,400&family=JetBrains+Mono:wght@400;500;700&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Space+Mono:wght@400;700&display=swap");
 
 /**
  * Sprout - brand CSS
@@ -13,6 +13,28 @@ html {
   scroll-behavior: smooth;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  overflow-x: hidden;
+}
+
+body {
+  overflow-x: hidden;
+}
+
+#__docusaurus,
+.main-wrapper {
+  overflow-x: hidden;
+  max-width: 100vw;
+}
+
+body::before {
+  content: "";
+  max-width: 100vw;
+  position: fixed;
+  top: 0;
+  left: 0;
+  background: transparent;
+  pointer-events: none;
+  z-index: -2;
 }
 
 /* ── Design tokens ──────────────────────────────── */
@@ -34,9 +56,9 @@ html {
 
   /* Typography */
   --ifm-font-family-base:
-    "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", "Roboto", sans-serif;
+    "Space Grotesk", "Segoe UI", "Helvetica Neue", sans-serif;
   --ifm-font-family-monospace:
-    "JetBrains Mono", "Menlo", "Monaco", "Consolas", monospace;
+    "Space Mono", "Menlo", "Monaco", "Consolas", monospace;
   --ifm-heading-font-weight: 800;
   --ifm-font-weight-bold: 700;
   --ifm-code-font-size: 90%;
@@ -116,8 +138,12 @@ h3,
 h4,
 h5,
 h6 {
-  font-family: "Inter", sans-serif;
-  letter-spacing: -0.025em;
+  font-family: "Space Grotesk", "Segoe UI", "Helvetica Neue", sans-serif;
+  letter-spacing: -0.03em;
+}
+
+body {
+  background: var(--ifm-background-color);
 }
 
 /* ── Inline code (excludes code blocks) ─────────── */
@@ -126,7 +152,7 @@ h6 {
   border: 1px solid rgba(13, 175, 98, 0.16);
   border-radius: 4px;
   padding: 0.15rem 0.4rem;
-  font-family: "JetBrains Mono", monospace;
+  font-family: "Space Mono", monospace;
   font-size: 0.88em;
 }
 
@@ -141,6 +167,37 @@ h6 {
   border-bottom: 1px solid rgba(13, 175, 98, 0.1);
   backdrop-filter: blur(14px);
   -webkit-backdrop-filter: blur(14px);
+  position: relative;
+  z-index: 1000;
+}
+
+/* Disable mobile sidebar in favor of top navbar */
+.navbar__toggle {
+  display: none !important;
+}
+
+.navbar-sidebar,
+.navbar-sidebar__backdrop {
+  display: none !important;
+}
+
+@media screen and (max-width: 996px) {
+  .navbar__items {
+    flex-wrap: wrap;
+    gap: 0.4rem;
+  }
+
+  .navbar__item {
+    display: inline-flex;
+  }
+
+  .navbar__items--right {
+    margin-left: auto;
+  }
+
+  .navbar__item.navbar__link[href*="github"] {
+    display: none !important;
+  }
 }
 
 [data-theme="dark"] .navbar {
@@ -194,6 +251,82 @@ h6 {
   background: var(--sprout-green-muted);
   border-color: var(--sprout-green);
   text-decoration: none;
+}
+
+/* ── Mobile sidebar ─────────────────────────────── */
+.navbar-sidebar {
+  position: fixed;
+  top: var(--ifm-navbar-height);
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background:
+    repeating-linear-gradient(
+      0deg,
+      rgba(18, 210, 136, 0.06) 0,
+      rgba(18, 210, 136, 0.06) 1px,
+      transparent 1px,
+      transparent 12px
+    ),
+    repeating-linear-gradient(
+      90deg,
+      rgba(18, 210, 136, 0.06) 0,
+      rgba(18, 210, 136, 0.06) 1px,
+      transparent 1px,
+      transparent 12px
+    ),
+    rgba(6, 16, 12, 0.96);
+  border-right: 1px solid rgba(18, 210, 136, 0.2);
+  z-index: 2000;
+  overflow-y: auto;
+}
+
+.navbar-sidebar__backdrop {
+  z-index: 1500;
+}
+
+[data-theme="dark"] .navbar-sidebar {
+  background:
+    repeating-linear-gradient(
+      0deg,
+      rgba(18, 210, 136, 0.08) 0,
+      rgba(18, 210, 136, 0.08) 1px,
+      transparent 1px,
+      transparent 12px
+    ),
+    repeating-linear-gradient(
+      90deg,
+      rgba(18, 210, 136, 0.08) 0,
+      rgba(18, 210, 136, 0.08) 1px,
+      transparent 1px,
+      transparent 12px
+    ),
+    rgba(4, 12, 9, 0.98);
+  border-right-color: rgba(18, 210, 136, 0.25);
+}
+
+.navbar-sidebar__brand {
+  border-bottom: 1px solid rgba(18, 210, 136, 0.18);
+}
+
+[data-theme="dark"] .navbar-sidebar__brand {
+  border-bottom-color: rgba(18, 210, 136, 0.24);
+}
+
+.navbar-sidebar__items {
+  height: auto;
+  overflow: visible;
+  overscroll-behavior: contain;
+  padding-bottom: 2rem;
+}
+
+.navbar-sidebar__item {
+  padding: 0.35rem 0.85rem;
+}
+
+.navbar-sidebar__close {
+  border-radius: 4px;
+  color: var(--sprout-green);
 }
 
 /* ── Sidebar ────────────────────────────────────── */
@@ -284,6 +417,23 @@ h6 {
   font-size: 1.1rem;
   letter-spacing: -0.015em;
   color: var(--ifm-color-primary);
+}
+
+/* ── Responsive tables ─────────────────────────── */
+.markdown table {
+  display: block;
+  width: 100%;
+  overflow-x: auto;
+  border-collapse: collapse;
+}
+
+.markdown table::-webkit-scrollbar {
+  height: 8px;
+}
+
+.markdown table::-webkit-scrollbar-thumb {
+  background: rgba(18, 210, 136, 0.2);
+  border-radius: 999px;
 }
 
 /* ── Code blocks ────────────────────────────────── */

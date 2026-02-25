@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { Bot, GitBranch, Terminal, Zap } from "lucide-react";
+import { DitheredBackdrop } from "./DitheredBackdrop";
 import styles from "../../pages/index.module.css";
 
 export function TmuxSection() {
@@ -115,10 +116,12 @@ export function TmuxSection() {
   return (
     <section className={styles.tmuxSection}>
       <div className="container">
-        <div className={styles.tmuxLayout}>
+        <div className={styles.tmuxLayout} data-anim>
           <div className={styles.tmuxTerminal}>
-            <div className={styles.tmuxFrame}>
+            <div className={`${styles.tmuxFrame} ${styles.voxelSurface}`}>
+              <DitheredBackdrop className={styles.ditherEdge} variant="section" />
               <div
+                className={styles.voxelInner}
                 style={{
                   flex: 1,
                   display: "flex",
@@ -130,7 +133,7 @@ export function TmuxSection() {
                 {windows[activeWindow].content}
               </div>
               {/* Tmux Status Bar */}
-              <div className={styles.tmuxStatus}>
+              <div className={`${styles.tmuxStatus} ${styles.voxelInner}`}>
                 <div className={styles.tmuxStatusLeft}>[sprout-feat]</div>
                 <div className={styles.tmuxTabs}>
                   {windows.map((w) => (
@@ -161,10 +164,12 @@ export function TmuxSection() {
               your entire workspace using simple TOML rules — from code editors
               to auto-running development servers.
             </p>
-            <div className={styles.tmuxConfigBox}>
-              <div className={styles.tmuxConfigHeader}>.sprout.toml</div>
-              <pre className={styles.tmuxConfigCode}>
-                {`# Match the layout shown on the left
+            <div className={`${styles.tmuxConfigBox} ${styles.voxelSurface}`}>
+              <DitheredBackdrop className={styles.ditherEdge} variant="section" />
+              <div className={styles.voxelInner}>
+                <div className={styles.tmuxConfigHeader}>.sprout.toml</div>
+                <pre className={styles.tmuxConfigCode}>
+                  {`# Match the layout shown on the left
 [[windows]]
 name = "main"
 layout = "main-horizontal"
@@ -180,7 +185,8 @@ panes = [{ run = "codex" }]
 [[windows]]
 name = "git"
 panes = [{ run = "lazygit" }]`}
-              </pre>
+                </pre>
+              </div>
             </div>
             <ul className={styles.tuiPoints}>
               <li>Define project-specific split layouts</li>

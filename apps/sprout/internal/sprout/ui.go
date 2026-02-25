@@ -2830,16 +2830,14 @@ func (u *tuiState) showCreateModal() {
 			mode = "existing branch"
 		}
 		msg.SetText(fmt.Sprintf(
-			"Create worktree [::b]%s[::-] (%s)?\n\nSelect whether to copy untracked + ignored files from the repo root.",
+			"Create worktree [::b]%s[::-] (%s)?\n\nChoose whether to include untracked + ignored files from the repo root.",
 			branch,
 			mode,
 		))
 		msg.SetBorder(true)
 		msg.SetBorderColor(paneBorderColor())
 
-		copyUntracked := true
-
-		confirm := func() {
+		confirm := func(copyUntracked bool) {
 			u.closeModal("create-confirm")
 			doCreate(branch, fromExisting, copyUntracked)
 		}
@@ -2848,10 +2846,6 @@ func (u *tuiState) showCreateModal() {
 			u.showCreateModal()
 		}
 		var render func()
-		toggleCopy := func() {
-			copyUntracked = !copyUntracked
-			render()
-		}
 
 		action := tview.NewTextView().
 			SetDynamicColors(true).
@@ -2869,16 +2863,12 @@ func (u *tuiState) showCreateModal() {
 		options.SetBorderColor(paneBorderColor())
 
 		render = func() {
-			copyLabel := "off"
-			if copyUntracked {
-				copyLabel = "on"
-			}
-			action.SetText(fmt.Sprintf(" r - Create worktree [::b]%s[::-]   u - Toggle copy: [::b]%s[::-]", branch, copyLabel))
+			action.SetText(fmt.Sprintf(" r - Create worktree [::b]%s[::-]   u - Create with untracked files", branch))
 
 			options.SetCell(0, 0, tview.NewTableCell("r").SetTextColor(ansiColor(ansiCyan)).SetExpansion(1))
 			options.SetCell(0, 1, tview.NewTableCell("Create worktree").SetTextColor(tcell.ColorDefault).SetExpansion(1))
 			options.SetCell(1, 0, tview.NewTableCell("u").SetTextColor(ansiColor(ansiCyan)).SetExpansion(1))
-			options.SetCell(1, 1, tview.NewTableCell(fmt.Sprintf("Copy untracked + ignored files: %s", copyLabel)).SetTextColor(tcell.ColorDefault).SetExpansion(1))
+			options.SetCell(1, 1, tview.NewTableCell("Create with untracked + ignored files").SetTextColor(tcell.ColorDefault).SetExpansion(1))
 			options.SetCell(2, 0, tview.NewTableCell("c").SetTextColor(ansiColor(ansiCyan)).SetExpansion(1))
 			options.SetCell(2, 1, tview.NewTableCell("Cancel").SetTextColor(tcell.ColorDefault).SetExpansion(1))
 		}
@@ -2887,9 +2877,9 @@ func (u *tuiState) showCreateModal() {
 		selectOption := func(row int) {
 			switch row {
 			case 0:
-				confirm()
+				confirm(false)
 			case 1:
-				toggleCopy()
+				confirm(true)
 			default:
 				cancel()
 			}
@@ -2910,10 +2900,10 @@ func (u *tuiState) showCreateModal() {
 			if ev.Key() == tcell.KeyRune {
 				switch unicode.ToLower(ev.Rune()) {
 				case 'r':
-					confirm()
+					confirm(false)
 					return nil
 				case 'u':
-					toggleCopy()
+					confirm(true)
 					return nil
 				case 'c':
 					cancel()

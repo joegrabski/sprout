@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from "react";
 import clsx from "clsx";
 import { Terminal } from "lucide-react";
+import { DitheredBackdrop } from "./DitheredBackdrop";
 import styles from "../../pages/index.module.css";
 
 type AgentLine =
@@ -113,7 +114,7 @@ export function TUISection() {
   return (
     <section className={styles.tuiSection}>
       <div className="container">
-        <div className={styles.tuiLayout}>
+        <div className={styles.tuiLayout} data-anim>
           <div className={styles.tuiCopy}>
             <span className={styles.sectionLabel}>Interface</span>
             <h2 className={styles.sectionTitle}>
@@ -129,7 +130,9 @@ export function TUISection() {
             </ul>
           </div>
 
-          <div className={styles.tuiFrame}>
+          <div className={`${styles.tuiFrame} ${styles.voxelSurface}`}>
+            <DitheredBackdrop className={styles.ditherEdge} variant="section" />
+            <div className={styles.voxelInner}>
             <div className={styles.terminalChrome}>
               <div className={styles.terminalDots}>
                 <span className={styles.terminalDot} style={{ background: "#ff5f57" }} />
@@ -269,6 +272,7 @@ export function TUISection() {
                   <span style={{ opacity: visible ? 1 : 0, transition: "opacity 0.25s" }}>{scene.worktree}</span> ↗
                 </span>
               </div>
+            </div>
             </div>
           </div>
         </div>
