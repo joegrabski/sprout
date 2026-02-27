@@ -82,9 +82,11 @@ func DefaultConfig() Config {
 func LoadConfig() (Config, error) {
 	cfg := DefaultConfig()
 
-	// Resolve repo name once for structured config scoping.
+	// Resolve git context once for structured config scoping and repo-local config.
+	repoRoot := ""
 	repoName := ""
-	if repoRoot, err := findGitRoot("."); err == nil {
+	if detectedRoot, err := findGitRoot("."); err == nil {
+		repoRoot = detectedRoot
 		repoName = filepath.Base(repoRoot)
 	}
 
@@ -108,7 +110,7 @@ func LoadConfig() (Config, error) {
 	}
 
 	// 2. Repo-level config (.sprout.toml at git root), overrides global
-	if repoRoot, err := findGitRoot("."); err == nil {
+	if repoRoot != "" {
 		repoConfigPath := filepath.Join(repoRoot, ".sprout.toml")
 		if _, err := os.Stat(repoConfigPath); err == nil {
 			if err := parseTOMLFlat(repoConfigPath, &cfg); err != nil {

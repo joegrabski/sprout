@@ -2,10 +2,13 @@ package sprout
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -399,5 +402,130 @@ func TestWorktreeDiffForFile_UntrackedShowsPatch(t *testing.T) {
 	}
 	if !strings.Contains(diff, "newfile.txt") {
 		t.Fatalf("expected file name in diff, got: %q", diff)
+	}
+}
+
+func runGitBench(t testing.TB, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v failed: %v: %s", args, err, string(out))
+	}
+	return string(out)
+}
+
+func setupBenchRepoWithWorktrees(t testing.TB, count int) (string, []string) {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is required for benchmark")
+	}
+
+	root := t.TempDir()
+	repo := filepath.Join(root, "repo")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatalf("mkdir repo failed: %v", err)
+	}
+
+	runGitBench(t, repo, "init")
+	runGitBench(t, repo, "config", "user.email", "bench@example.com")
+	runGitBench(t, repo, "config", "user.name", "Bench")
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatalf("write file failed: %v", err)
+	}
+	runGitBench(t, repo, "add", "README.md")
+	runGitBench(t, repo, "commit", "-m", "init")
+
+	base := strings.TrimSpace(runGitBench(t, repo, "branch", "--show-current"))
+	if base == "" {
+		base = "main"
+	}
+
+	paths := []string{repo}
+	for i := 0; i < count; i++ {
+		branch := "feat/bench-" + strconv.Itoa(i)
+		wtPath := filepath.Join(root, "wt-"+strconv.Itoa(i))
+		runGitBench(t, repo, "worktree", "add", "-b", branch, wtPath, base)
+		paths = append(paths, wtPath)
+		if i%2 == 0 {
+			_ = os.WriteFile(filepath.Join(wtPath, fmt.Sprintf("dirty-%d.tmp", i)), []byte("dirty\n"), 0o644)
+		}
+	}
+
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd failed: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chdir(wd)
+	})
+	if err := os.Chdir(repo); err != nil {
+		t.Fatalf("chdir failed: %v", err)
+	}
+
+	return repo, paths
+}
+
+func BenchmarkManagerListWorktrees(b *testing.B) {
+	_, _ = setupBenchRepoWithWorktrees(b, 8)
+	m := NewManager(DefaultConfig())
+	commandExistsCache = sync.Map{}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		items, err := m.ListWorktrees()
+		if err != nil {
+			b.Fatalf("ListWorktrees failed: %v", err)
+		}
+		if len(items) < 2 {
+			b.Fatalf("expected multiple worktrees, got %d", len(items))
+		}
+	}
+}
+
+func BenchmarkWorktreeDirty(b *testing.B) {
+	_, paths := setupBenchRepoWithWorktrees(b, 6)
+	m := NewManager(DefaultConfig())
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = m.WorktreeDirty(paths[i%len(paths)])
+	}
+}
+
+func BenchmarkRefreshRepoChoicesForce(b *testing.B) {
+	if _, err := exec.LookPath("git"); err != nil {
+		b.Skip("git is required for benchmark")
+	}
+	root := b.TempDir()
+	repoCount := 8
+	var firstRepo string
+	for i := 0; i < repoCount; i++ {
+		repo := filepath.Join(root, fmt.Sprintf("repo-%d", i))
+		if err := os.MkdirAll(repo, 0o755); err != nil {
+			b.Fatalf("mkdir repo failed: %v", err)
+		}
+		runGitBench(b, repo, "init")
+		runGitBench(b, repo, "config", "user.email", "bench@example.com")
+		runGitBench(b, repo, "config", "user.name", "Bench")
+		if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("hello\n"), 0o644); err != nil {
+			b.Fatalf("write file failed: %v", err)
+		}
+		runGitBench(b, repo, "add", "README.md")
+		runGitBench(b, repo, "commit", "-m", "init")
+		if i == 0 {
+			firstRepo = repo
+		}
+	}
+
+	u := &tuiState{repoRoot: firstRepo}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		u.lastRepoScan = time.Time{}
+		u.refreshRepoChoices(true)
+		if len(u.repos) == 0 {
+			b.Fatal("expected repos")
+		}
 	}
 }

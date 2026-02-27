@@ -12,9 +12,11 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -261,7 +263,7 @@ func (m *Manager) WorktreeRootDir(repoRoot string) string {
 }
 
 func (m *Manager) parseWorktreeList(repoRoot string) ([]Worktree, error) {
-	out, err := runCmdOutput(repoRoot, "git", "worktree", "list", "--porcelain")
+	out, err := runCmdBytes(repoRoot, "git", "worktree", "list", "--porcelain")
 	if err != nil {
 		return nil, err
 	}
@@ -278,8 +280,8 @@ func (m *Manager) parseWorktreeList(repoRoot string) ([]Worktree, error) {
 		curBranch = ""
 	}
 
-	for _, line := range strings.Split(out, "\n") {
-		line = strings.TrimRight(line, "\r")
+	for _, raw := range bytes.Split(out, []byte{'\n'}) {
+		line := strings.TrimRight(string(raw), "\r")
 		if strings.TrimSpace(line) == "" {
 			flush()
 			continue
@@ -379,9 +381,20 @@ func worktreeBranchOrName(wt *Worktree) string {
 }
 
 func commandExists(name string) bool {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return false
+	}
+	if cached, ok := commandExistsCache.Load(name); ok {
+		return cached.(bool)
+	}
 	_, err := exec.LookPath(name)
-	return err == nil
+	ok := err == nil
+	commandExistsCache.Store(name, ok)
+	return ok
 }
+
+var commandExistsCache sync.Map
 
 func (m *Manager) tmuxHasSession(session string) bool {
 	_, err := runCmdOutput("", "tmux", "has-session", "-t", session)
@@ -808,13 +821,59 @@ func (m *Manager) ListWorktrees() ([]Worktree, error) {
 		return nil, err
 	}
 	current := absPath(repoRoot)
-
-	hasTmux := commandExists("tmux")
-
 	for i := range items {
 		items[i].Path = absPath(items[i].Path)
 		items[i].Current = items[i].Path == current
-		items[i].Dirty = m.WorktreeDirty(items[i].Path)
+	}
+
+	hasTmux := commandExists("tmux")
+	tmuxSessions, tmuxWindows := map[string]struct{}{}, map[string]map[string]struct{}{}
+	tmuxSnapshotOK := false
+	if hasTmux {
+		if sessions, windows, snapErr := tmuxSessionSnapshot(); snapErr == nil {
+			tmuxSessions = sessions
+			tmuxWindows = windows
+			tmuxSnapshotOK = true
+		}
+	}
+
+	if len(items) <= 2 {
+		for i := range items {
+			items[i].Dirty = m.WorktreeDirty(items[i].Path)
+		}
+	} else {
+		workers := runtime.GOMAXPROCS(0)
+		if workers < 2 {
+			workers = 2
+		}
+		if workers > len(items) {
+			workers = len(items)
+		}
+		if workers > 4 {
+			workers = 4
+		}
+		if workers < 1 {
+			workers = 1
+		}
+		jobs := make(chan int, len(items))
+		var wg sync.WaitGroup
+		for w := 0; w < workers; w++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for idx := range jobs {
+					items[idx].Dirty = m.WorktreeDirty(items[idx].Path)
+				}
+			}()
+		}
+		for i := range items {
+			jobs <- i
+		}
+		close(jobs)
+		wg.Wait()
+	}
+
+	for i := range items {
 		items[i].TmuxState = "n/a"
 		items[i].AgentState = "n/a"
 		if !hasTmux {
@@ -824,13 +883,26 @@ func (m *Manager) ListWorktrees() ([]Worktree, error) {
 		items[i].TmuxState = "no"
 		items[i].AgentState = "no"
 		session := m.tmuxWorktreeSessionName(repoRoot, &items[i])
-		if m.tmuxHasSession(session) {
+		if _, ok := tmuxSessions[session]; ok {
 			items[i].TmuxState = "yes"
 			agentWindow := m.tmuxAgentWindowName(worktreeBranchOrName(&items[i]))
-			if m.tmuxWindowExists(session, agentWindow) {
-				items[i].AgentState = "yes"
-			} else if _, ok := m.findAgentPaneInSession(session); ok {
-				items[i].AgentState = "yes"
+			if windows, ok := tmuxWindows[session]; ok {
+				if _, hasAgentWindow := windows[agentWindow]; hasAgentWindow {
+					items[i].AgentState = "yes"
+				}
+				for window := range windows {
+					if strings.HasPrefix(strings.ToLower(strings.TrimSpace(window)), "agent") {
+						items[i].AgentState = "yes"
+						break
+					}
+				}
+			}
+			if !tmuxSnapshotOK && items[i].AgentState != "yes" {
+				if m.tmuxWindowExists(session, agentWindow) {
+					items[i].AgentState = "yes"
+				} else if _, ok := m.findAgentPaneInSession(session); ok {
+					items[i].AgentState = "yes"
+				}
 			}
 		}
 	}
@@ -846,6 +918,39 @@ func (m *Manager) ListWorktrees() ([]Worktree, error) {
 	})
 
 	return items, nil
+}
+
+func tmuxSessionSnapshot() (map[string]struct{}, map[string]map[string]struct{}, error) {
+	out, err := runCmdBytes("", "tmux", "list-windows", "-a", "-F", "#{session_name}\t#{window_name}")
+	if err != nil {
+		return nil, nil, err
+	}
+	sessions := map[string]struct{}{}
+	windows := map[string]map[string]struct{}{}
+	for _, raw := range bytes.Split(out, []byte{'\n'}) {
+		line := string(raw)
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, "\t", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		session := strings.TrimSpace(parts[0])
+		window := strings.TrimSpace(parts[1])
+		if session == "" {
+			continue
+		}
+		sessions[session] = struct{}{}
+		if windows[session] == nil {
+			windows[session] = map[string]struct{}{}
+		}
+		if window != "" {
+			windows[session][window] = struct{}{}
+		}
+	}
+	return sessions, windows, nil
 }
 
 func (m *Manager) FindWorktree(target string) (*Worktree, error) {
@@ -901,11 +1006,11 @@ func (m *Manager) BranchCheckedOutAnywhere(branch string) bool {
 }
 
 func (m *Manager) WorktreeDirty(path string) bool {
-	out, err := runCmdOutput(path, "git", "status", "--porcelain", "--untracked-files=all")
+	out, err := runCmdBytes(path, "git", "status", "--porcelain", "--untracked-files=all", "-z")
 	if err != nil {
 		return false
 	}
-	return strings.TrimSpace(out) != ""
+	return len(out) != 0
 }
 
 func (m *Manager) WorktreeDiff(path string, width int) (string, error) {

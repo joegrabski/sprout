@@ -26,10 +26,11 @@ type repoChoice struct {
 }
 
 type tuiState struct {
-	mgr      *Manager
-	repoName string
-	repoRoot string
-	repoSlug string
+	mgr        *Manager
+	repoName   string
+	repoRoot   string
+	repoSlug   string
+	repoBranch string
 
 	app         *tview.Application
 	pages       *tview.Pages
@@ -68,6 +69,9 @@ type tuiState struct {
 	forceTableSelect    bool
 	footerLevel         string
 	footerMsg           string
+	lastRepoScan        time.Time
+	lastRepoScanParent  string
+	repoChoiceCache     map[string]repoChoice
 }
 
 type paneSize struct {
@@ -371,6 +375,7 @@ func newTUI(mgr *Manager, repoRoot string) *tuiState {
 		paneSizes:           map[string]paneSize{},
 		paneActivity:        map[string]int64{},
 		panePromptActivity:  map[string]int64{},
+		repoChoiceCache:     map[string]repoChoice{},
 	}
 	u.focusables = []tview.Primitive{u.statusPane, u.detailPane, u.table}
 
@@ -395,7 +400,7 @@ func newTUI(mgr *Manager, repoRoot string) *tuiState {
 	u.app.SetInputCapture(u.handleKey)
 
 	u.footerRight.SetText(fmt.Sprintf("v%s", Version))
-	u.refreshRepoChoices()
+	u.refreshRepoChoices(true)
 	u.app.SetFocus(u.statusPane)
 	u.updatePaneFocusStyles()
 	u.setInfo("ready")
@@ -818,11 +823,12 @@ func (u *tuiState) applyFilter() {
 }
 
 func (u *tuiState) refresh() error {
-	u.refreshRepoChoices()
+	u.refreshRepoChoices(false)
 	items, err := u.mgr.ListWorktrees()
 	if err != nil {
 		return err
 	}
+	u.repoBranch = u.mgr.CurrentBranch(u.repoRoot)
 	u.clearDiffCaches()
 	u.items = items
 	alive := map[string]struct{}{}
@@ -944,7 +950,7 @@ func (u *tuiState) currentFilterLabel() string {
 }
 
 func (u *tuiState) renderStatusPane() {
-	repoBranch := u.mgr.CurrentBranch(u.repoRoot)
+	repoBranch := u.repoBranch
 	if repoBranch == "" {
 		repoBranch = "(detached)"
 	}
@@ -995,17 +1001,21 @@ func (u *tuiState) renderStatusPane() {
 	u.statusPane.SetText(tview.TranslateANSI(status))
 }
 
-func (u *tuiState) refreshRepoChoices() {
+func (u *tuiState) refreshRepoChoices(force bool) {
 	parent := filepath.Dir(u.repoRoot)
+	if !force && len(u.repos) > 0 && u.lastRepoScanParent == parent && time.Since(u.lastRepoScan) < 5*time.Second {
+		return
+	}
 	entries, err := os.ReadDir(parent)
 	if err != nil {
 		u.repos = []repoChoice{buildRepoChoice(u.repoRoot)}
 		u.repoSlug = u.repos[0].GitHubRepo
+		u.lastRepoScan = time.Now()
+		u.lastRepoScanParent = parent
 		return
 	}
 
-	choices := map[string]repoChoice{}
-	choices[u.repoRoot] = buildRepoChoice(u.repoRoot)
+	repoRoots := []string{u.repoRoot}
 
 	for _, ent := range entries {
 		if !ent.IsDir() {
@@ -1015,12 +1025,44 @@ func (u *tuiState) refreshRepoChoices() {
 		if !isGitRepoDir(root) {
 			continue
 		}
-		choices[root] = buildRepoChoice(root)
+		if root == u.repoRoot {
+			continue
+		}
+		repoRoots = append(repoRoots, root)
 	}
 
 	u.repos = u.repos[:0]
-	for _, choice := range choices {
-		u.repos = append(u.repos, choice)
+	u.repos = make([]repoChoice, len(repoRoots))
+	if u.repoChoiceCache == nil {
+		u.repoChoiceCache = map[string]repoChoice{}
+	}
+	missing := make([]int, 0, len(repoRoots))
+	for i, root := range repoRoots {
+		if cached, ok := u.repoChoiceCache[root]; ok {
+			if root == u.repoRoot && strings.TrimSpace(u.repoBranch) != "" {
+				cached.Branch = u.repoBranch
+			}
+			u.repos[i] = cached
+			continue
+		}
+		missing = append(missing, i)
+	}
+	if len(missing) > 1 {
+		var wg sync.WaitGroup
+		for _, i := range missing {
+			wg.Add(1)
+			go func(idx int) {
+				defer wg.Done()
+				u.repos[idx] = buildRepoChoice(repoRoots[idx])
+			}(i)
+		}
+		wg.Wait()
+	} else if len(missing) == 1 {
+		idx := missing[0]
+		u.repos[idx] = buildRepoChoice(repoRoots[idx])
+	}
+	for i, root := range repoRoots {
+		u.repoChoiceCache[root] = u.repos[i]
 	}
 
 	sort.Slice(u.repos, func(i, j int) bool {
@@ -1048,6 +1090,8 @@ func (u *tuiState) refreshRepoChoices() {
 			break
 		}
 	}
+	u.lastRepoScan = time.Now()
+	u.lastRepoScanParent = parent
 }
 
 func buildRepoChoice(root string) repoChoice {
@@ -2313,7 +2357,7 @@ func modalCapture(
 }
 
 func (u *tuiState) showRepoSwitchModal() {
-	u.refreshRepoChoices()
+	u.refreshRepoChoices(true)
 	if len(u.repos) <= 1 {
 		u.setWarn("no other repositories found near current repo")
 		return
@@ -2788,7 +2832,8 @@ func (u *tuiState) showCreateModal() {
 				}
 
 				if refreshErr == nil {
-					u.refreshRepoChoices()
+					u.refreshRepoChoices(false)
+					u.repoBranch = u.mgr.CurrentBranch(u.repoRoot)
 					u.items = refreshed
 					u.applyFilter()
 					u.renderTable()
@@ -3176,7 +3221,8 @@ func (u *tuiState) showDeleteModal() {
 				}
 
 				if refreshErr == nil {
-					u.refreshRepoChoices()
+					u.refreshRepoChoices(false)
+					u.repoBranch = u.mgr.CurrentBranch(u.repoRoot)
 					u.items = refreshed
 					u.applyFilter()
 					u.renderTable()
