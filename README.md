@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="apps/web/static/img/banner.png" alt="Sprout — git worktrees, without the context switching" width="840" />
+<img src="apps/web/static/img/banner.png" alt="Sprout — git worktrees, without the context switching" width="900" />
 
 <br/>
 

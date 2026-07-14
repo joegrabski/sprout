@@ -1,34 +1,31 @@
-// Regenerate: node apps/web/scripts/generate-banner.mjs && rsvg-convert banner.svg -w 2560 -h 600 -o apps/web/static/img/banner.png
+// Regenerate: node apps/web/scripts/generate-social-card.mjs && rsvg-convert social.svg -w 1200 -h 630 -o apps/web/static/img/social-card.png
 import { writeFileSync } from "node:fs";
 import { branchField, markDots } from "./brand-lib.mjs";
 
-const W = 1280, H = 300, cx = W / 2;
+const W = 1200, H = 630, cx = W / 2;
 
-// Dithered branches grow up from the bottom edge, fading in below the tagline so
-// they read as texture framing the lockup rather than filling the whole panel.
 const field = branchField({
-  W, H, cell: 6, dotR: 1.4, intensity: 0.85, treeDiv: 26,
+  W, H, cell: 7, dotR: 1.6, intensity: 0.9, treeDiv: 24, seed: 0x2b17,
   mask: (x, y) => {
-    const up = Math.min(1, Math.max(0, (y - 168) / 110)); // 0 above tagline → 1 near bottom
-    // ease the horizontal centre a touch so it doesn't crowd straight under text
+    const up = Math.min(1, Math.max(0, (y - H * 0.5) / (H * 0.42))); // lower half only
     const cxd = Math.abs(x - cx) / (W * 0.5);
-    const centre = 0.55 + 0.45 * Math.min(1, cxd / 0.35);
+    const centre = 0.5 + 0.5 * Math.min(1, cxd / 0.4);
     return up * centre;
   },
 });
 
-const yc = 138, markS = 4.2, mCx = 512;
-const mtx = mCx - 12 * markS, mty = yc - 12.8 * markS;
-const wordX = 572, wordBaseline = yc + 30;
+// Stacked lockup: mark on top, wordmark, tagline, domain.
+const markS = 6.6, markCenterY = 196;
+const mtx = cx - 12 * markS, mty = markCenterY - 12.83 * markS;
 
 const svg = `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg" font-family="SF Mono, ui-monospace, Menlo, monospace">
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="0" y2="${H}" gradientUnits="userSpaceOnUse">
       <stop offset="0" stop-color="#0c1712"/><stop offset="1" stop-color="#080d0a"/>
     </linearGradient>
-    <radialGradient id="halo" cx="50%" cy="47%" r="60%">
+    <radialGradient id="halo" cx="50%" cy="34%" r="62%">
       <stop offset="0" stop-color="#1f7a52" stop-opacity="0.5"/>
-      <stop offset="0.55" stop-color="#124d34" stop-opacity="0.16"/>
+      <stop offset="0.55" stop-color="#124d34" stop-opacity="0.15"/>
       <stop offset="1" stop-color="#0b2a1c" stop-opacity="0"/>
     </radialGradient>
     <linearGradient id="leaf" x1="0" y1="0" x2="1" y2="1">
@@ -42,9 +39,10 @@ const svg = `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" xmlns="http
   <rect width="${W}" height="${H}" fill="url(#halo)"/>
   <g shape-rendering="crispEdges">${field}</g>
   <g transform="translate(${mtx.toFixed(1)} ${mty.toFixed(1)}) scale(${markS})">${markDots()}</g>
-  <text x="${wordX}" y="${wordBaseline}" font-size="82" font-weight="800" letter-spacing="-1.5" fill="url(#word)">sprout</text>
-  <text x="${cx}" y="212" text-anchor="middle" font-size="18" font-weight="500" letter-spacing="5" fill="#63d69e" fill-opacity="0.9">GIT WORKTREES · WITHOUT THE CONTEXT SWITCHING</text>
+  <text x="${cx}" y="388" text-anchor="middle" font-size="132" font-weight="800" letter-spacing="-3" fill="url(#word)">sprout</text>
+  <text x="${cx}" y="448" text-anchor="middle" font-size="26" font-weight="500" letter-spacing="6" fill="#6fdca6" fill-opacity="0.92">GIT WORKTREES · WITHOUT THE CONTEXT SWITCHING</text>
+  <text x="${cx}" y="566" text-anchor="middle" font-size="24" font-weight="600" letter-spacing="3" fill="#3f7d61">sprout.dev</text>
 </svg>
 `;
-writeFileSync("banner.svg", svg);
-console.log("wrote banner.svg");
+writeFileSync("social.svg", svg);
+console.log("wrote social.svg");
