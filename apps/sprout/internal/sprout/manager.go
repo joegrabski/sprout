@@ -9,7 +9,6 @@ import (
 	"io/fs"
 	"os"
 	"os/exec"
-	"path"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -42,28 +41,23 @@ type Worktree struct {
 }
 
 type DiffFile struct {
-	Path   string
-	Status string
+	Path         string
+	PreviousPath string
+	Status       string
+}
+
+type WorktreeDiffSnapshot struct {
+	Digest string
+	Files  []DiffFile
 }
 
 type NewOptions struct {
-	Branch            string
-	Type              string
-	Name              string
-	BaseBranch        string
-	FromBranch        string
-	Launch            bool
-	SkipCopyUntracked bool
-	OnCopyProgress    func(CopyProgress)
-}
-
-type CopyProgress struct {
-	Phase       string
-	CurrentPath string
-	CopiedFiles int
-	TotalFiles  int
-	CopiedBytes int64
-	TotalBytes  int64
+	Branch     string
+	Type       string
+	Name       string
+	BaseBranch string
+	FromBranch string
+	Launch     bool
 }
 
 type DeleteProgress struct {
@@ -148,10 +142,57 @@ type RemoveOptions struct {
 	Force            bool
 	DeleteBranch     bool
 	OnDeleteProgress func(DeleteProgress)
+	// Async removes the worktree without waiting for its files to be deleted:
+	// the directory is renamed aside instantly and the bytes are reaped in a
+	// background goroutine. OnDeleteProgress is ignored when Async is set.
+	Async bool
+}
+
+// sproutTrashPrefix marks a directory that a previous (async) removal renamed
+// aside and is (or was) reaping in the background. Any such directory left over
+// after a crash is swept on the next run — see SweepDeletedTrash.
+const sproutTrashPrefix = ".sprout-trash."
+
+// trashPathFor returns a path under the worktree root (same filesystem as the
+// worktrees it holds, so the rename is atomic and instant) to move a worktree to
+// before background reaping. Keeping trash at the root keeps SweepDeletedTrash a
+// cheap top-level scan.
+func trashPathFor(worktreeRoot, worktreePath string) string {
+	base := filepath.Base(worktreePath)
+	return filepath.Join(worktreeRoot, fmt.Sprintf("%s%s.%d", sproutTrashPrefix, base, time.Now().UnixNano()))
+}
+
+// SweepDeletedTrash reaps any leftover async-removal trash directories under the
+// repo's worktree root — e.g. from a crash or exit mid-reap. Each is removed in
+// its own goroutine; the call returns immediately. Trash directories are also
+// hidden from worktree listings, so a slow reap never shows up as a worktree.
+func (m *Manager) SweepDeletedTrash(repoRoot string) {
+	root := m.WorktreeRootDir(repoRoot)
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if !strings.HasPrefix(e.Name(), sproutTrashPrefix) {
+			continue
+		}
+		path := filepath.Join(root, e.Name())
+		go func(p string) {
+			if err := os.RemoveAll(p); err != nil {
+				debugLogf("sweep_trash failed path=%q: %v", p, err)
+			}
+		}(path)
+	}
 }
 
 type Manager struct {
 	Cfg Config
+
+	commonDirCache sync.Map // repoRoot -> git common dir (immutable per repo)
+
+	// tunnelFetch resolves tunnel name -> public URL for preview-sync; nil uses
+	// fetchNgrokTunnels. Overridden in tests to avoid the network.
+	tunnelFetch tunnelFetcher
 }
 
 func NewManager(cfg Config) *Manager {
@@ -312,15 +353,18 @@ func (m *Manager) tmuxWorktreeSessionName(repoRoot string, wt *Worktree) string 
 	if wt == nil {
 		return m.tmuxSessionName(repoRoot)
 	}
-	branch := worktreeBranchOrName(wt)
-	return m.tmuxWorktreeSessionNameFrom(repoRoot, branch, wt.Path)
+	return m.tmuxWorktreeSessionNameFrom(repoRoot, wt.Branch, wt.Path)
 }
 
 func (m *Manager) tmuxWorktreeSessionNameFrom(repoRoot, branch, worktreePath string) string {
 	base := m.tmuxSessionName(repoRoot)
-	token := strings.TrimSpace(branch)
-	if token == "" {
-		token = filepath.Base(worktreePath)
+	// Use worktree path as the stable tmux session token. Branch can change
+	// inside the same worktree, but path remains consistent.
+	token := strings.TrimSpace(worktreePath)
+	if token != "" {
+		token = filepath.Base(absPath(token))
+	} else {
+		token = strings.TrimSpace(branch)
 	}
 	suffix := safeName(token)
 	if suffix == "" {
@@ -406,6 +450,21 @@ func (m *Manager) tmuxWindowExists(session, window string) bool {
 	return err == nil
 }
 
+// tmuxSessionWindows returns the window names currently in a session.
+func (m *Manager) tmuxSessionWindows(session string) ([]string, error) {
+	out, err := runCmdOutput("", "tmux", "list-windows", "-t", session, "-F", "#{window_name}")
+	if err != nil {
+		return nil, err
+	}
+	var names []string
+	for _, line := range strings.Split(out, "\n") {
+		if name := strings.TrimSpace(line); name != "" {
+			names = append(names, name)
+		}
+	}
+	return names, nil
+}
+
 func defaultShellCommand() string {
 	shell := os.Getenv("SHELL")
 	if shell == "" {
@@ -432,6 +491,42 @@ func commandShouldRemainOnExit(command string) bool {
 		return false
 	}
 	return true
+}
+
+func shellQuoteSingle(value string) string {
+	return strings.ReplaceAll(value, "'", "'\"'\"'")
+}
+
+// loginInteractiveShellCommand wraps inner so it runs under the user's shell as
+// a login + interactive shell. This sources the profile files that set up PATH
+// and tool-manager shims (~/.zprofile + ~/.zshrc for zsh, the bash equivalents),
+// so preview/worktree panes can find tools like task, ngrok, yarn, and asdf/mise
+// shims. For shells whose flag syntax we don't recognise it falls back to the
+// portable `sh -lc`, which only guarantees login-profile sourcing.
+func loginInteractiveShellCommand(inner string) string {
+	shell := defaultShellCommand()
+	switch strings.ToLower(filepath.Base(shell)) {
+	case "zsh", "bash":
+		return shell + " -l -i -c '" + shellQuoteSingle(inner) + "'"
+	default:
+		return "sh -lc '" + shellQuoteSingle(inner) + "'"
+	}
+}
+
+// tmuxCommandWithShellFallback runs a command and then returns to an interactive shell.
+// This keeps the pane usable after short-lived processes exit. The command runs
+// under the user's login+interactive shell so their environment is loaded.
+func tmuxCommandWithShellFallback(command string) string {
+	cmd := strings.TrimSpace(command)
+	if cmd == "" {
+		return defaultShellCommand()
+	}
+	if !commandShouldRemainOnExit(cmd) {
+		return cmd
+	}
+	shell := defaultShellCommand()
+	inner := cmd + "; exec " + shell + " -i"
+	return loginInteractiveShellCommand(inner)
 }
 
 func (m *Manager) tmuxSetRemainOnExit(session, window string) error {
@@ -532,6 +627,23 @@ func (m *Manager) tmuxConfiguredWindows(branch string, hasCommand func(string) b
 	return windows
 }
 
+func trimWindowConfigName(win WindowConfig, fallbackIndex int) string {
+	name := trimTmuxWindowName(win.Name)
+	if name == "" {
+		name = fmt.Sprintf("window-%d", fallbackIndex+1)
+	}
+	return name
+}
+
+func (m *Manager) configuredAgentWindowName() string {
+	for i, win := range m.Cfg.Windows {
+		if strings.EqualFold(strings.TrimSpace(win.Role), "agent") {
+			return trimWindowConfigName(win, i)
+		}
+	}
+	return ""
+}
+
 func (m *Manager) tmuxEnsureSession(session, repoRoot, initialWindow, initialCommand string) error {
 	if m.tmuxHasSession(session) {
 		return nil
@@ -544,7 +656,8 @@ func (m *Manager) tmuxEnsureSession(session, repoRoot, initialWindow, initialCom
 	if command == "" {
 		command = defaultShellCommand()
 	}
-	if err := runCmdQuiet("", "tmux", "new-session", "-d", "-s", session, "-n", window, "-c", repoRoot, command); err != nil {
+	runCommand := tmuxCommandWithShellFallback(command)
+	if err := runCmdQuiet("", "tmux", "new-session", "-d", "-s", session, "-n", window, "-c", repoRoot, runCommand); err != nil {
 		return err
 	}
 	if commandShouldRemainOnExit(command) {
@@ -561,7 +674,8 @@ func (m *Manager) tmuxEnsureWindow(session, window, worktreePath, command string
 	if cmd == "" {
 		cmd = defaultShellCommand()
 	}
-	if err := runCmdQuiet("", "tmux", "new-window", "-d", "-t", session, "-n", window, "-c", worktreePath, cmd); err != nil {
+	runCommand := tmuxCommandWithShellFallback(cmd)
+	if err := runCmdQuiet("", "tmux", "new-window", "-d", "-t", session, "-n", window, "-c", worktreePath, runCommand); err != nil {
 		return err
 	}
 	if commandShouldRemainOnExit(cmd) {
@@ -680,32 +794,8 @@ func (m *Manager) tmuxLaunchWindowedSession(session, worktreePath string, window
 			continue // don't re-split panes in an existing session
 		}
 
-		splitFlag := tmuxSplitFlag(win.Layout)
-		for j, pane := range win.Panes {
-			if j == 0 {
-				continue // pane 0 was created with the window/session
-			}
-			paneDir := worktreePath
-			if d := resolvePaneDir(pane.Dir, worktreePath); d != "" {
-				paneDir = d
-			}
-			args := []string{"split-window", splitFlag, "-t", session + ":" + winName, "-c", paneDir}
-			if pane.Run != "" {
-				args = append(args, pane.Run)
-			}
-			if err := runCmdQuiet("", "tmux", args...); err != nil {
-				return "", "", err
-			}
-		}
-
-		// Apply the tmux layout. Default to even-horizontal when multiple panes
-		// are defined but no explicit layout is set.
-		layout := win.Layout
-		if layout == "" && len(win.Panes) > 1 {
-			layout = "even-horizontal"
-		}
-		if layout != "" && len(win.Panes) > 1 {
-			_ = runCmdQuiet("", "tmux", "select-layout", "-t", session+":"+winName, layout)
+		if err := m.tmuxBuildWindowPanes(session, winName, win, worktreePath); err != nil {
+			return "", "", err
 		}
 	}
 
@@ -717,6 +807,39 @@ func (m *Manager) tmuxLaunchWindowedSession(session, worktreePath string, window
 		}
 	}
 	return session, firstWin, nil
+}
+
+// tmuxBuildWindowPanes splits panes 1..n into an existing window (pane 0 is
+// created together with the window) and applies the configured tmux layout.
+func (m *Manager) tmuxBuildWindowPanes(session, winName string, win WindowConfig, worktreePath string) error {
+	splitFlag := tmuxSplitFlag(win.Layout)
+	for j, pane := range win.Panes {
+		if j == 0 {
+			continue // pane 0 was created with the window/session
+		}
+		paneDir := worktreePath
+		if d := resolvePaneDir(pane.Dir, worktreePath); d != "" {
+			paneDir = d
+		}
+		args := []string{"split-window", splitFlag, "-t", session + ":" + winName, "-c", paneDir}
+		if pane.Run != "" {
+			args = append(args, tmuxCommandWithShellFallback(pane.Run))
+		}
+		if err := runCmdQuiet("", "tmux", args...); err != nil {
+			return err
+		}
+	}
+
+	// Apply the tmux layout. Default to even-horizontal when multiple panes
+	// are defined but no explicit layout is set.
+	layout := win.Layout
+	if layout == "" && len(win.Panes) > 1 {
+		layout = "even-horizontal"
+	}
+	if layout != "" && len(win.Panes) > 1 {
+		_ = runCmdQuiet("", "tmux", "select-layout", "-t", session+":"+winName, layout)
+	}
+	return nil
 }
 
 func (m *Manager) tmuxEnsureWorktreeWindow(repoRoot, branch, worktreePath string) (string, string, error) {
@@ -763,7 +886,7 @@ func (m *Manager) tmuxEnsureWorktreeWindow(repoRoot, branch, worktreePath string
 					// Split window for subsequent panes
 					args := []string{"split-window", "-v", "-t", session + ":" + winName, "-c", worktreePath}
 					if pane.Command != "" {
-						args = append(args, pane.Command)
+						args = append(args, tmuxCommandWithShellFallback(pane.Command))
 					}
 					if err := runCmdQuiet("", "tmux", args...); err != nil {
 						return "", "", err
@@ -815,7 +938,10 @@ func (m *Manager) ListWorktrees() ([]Worktree, error) {
 	if err != nil {
 		return nil, err
 	}
+	return m.ListWorktreesForRepo(repoRoot)
+}
 
+func (m *Manager) ListWorktreesForRepo(repoRoot string) ([]Worktree, error) {
 	items, err := m.parseWorktreeList(repoRoot)
 	if err != nil {
 		return nil, err
@@ -885,10 +1011,18 @@ func (m *Manager) ListWorktrees() ([]Worktree, error) {
 		session := m.tmuxWorktreeSessionName(repoRoot, &items[i])
 		if _, ok := tmuxSessions[session]; ok {
 			items[i].TmuxState = "yes"
-			agentWindow := m.tmuxAgentWindowName(worktreeBranchOrName(&items[i]))
+			agentWindow := m.configuredAgentWindowName()
+			if agentWindow == "" {
+				agentWindow = m.tmuxAgentWindowName(worktreeBranchOrName(&items[i]))
+			}
 			if windows, ok := tmuxWindows[session]; ok {
 				if _, hasAgentWindow := windows[agentWindow]; hasAgentWindow {
 					items[i].AgentState = "yes"
+				}
+				if items[i].AgentState != "yes" {
+					if _, ok := m.findAgentWindowInSession(session); ok {
+						items[i].AgentState = "yes"
+					}
 				}
 				for window := range windows {
 					if strings.HasPrefix(strings.ToLower(strings.TrimSpace(window)), "agent") {
@@ -953,6 +1087,58 @@ func tmuxSessionSnapshot() (map[string]struct{}, map[string]map[string]struct{},
 	return sessions, windows, nil
 }
 
+func (m *Manager) paneLogDir(repoRoot string) string {
+	return filepath.Join(os.TempDir(), "sprout-panes", safeName(m.tmuxSessionName(repoRoot)))
+}
+
+func (m *Manager) paneStreamLogPath(repoRoot, paneTarget string) string {
+	paneID := safeName(strings.TrimPrefix(strings.TrimSpace(paneTarget), "%"))
+	if paneID == "" {
+		paneID = "pane"
+	}
+	return filepath.Join(m.paneLogDir(repoRoot), fmt.Sprintf("pane-%s.log", paneID))
+}
+
+func (m *Manager) ensurePaneStream(repoRoot, paneTarget string, seedLines int, reset bool) (string, error) {
+	logPath := m.paneStreamLogPath(repoRoot, paneTarget)
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
+		return "", err
+	}
+	if reset {
+		snapshot, err := tmuxCapturePane(paneTarget, seedLines, false)
+		if err != nil {
+			snapshot = "agent pane unavailable"
+		}
+		if !strings.HasSuffix(snapshot, "\n") {
+			snapshot += "\n"
+		}
+		if err := os.WriteFile(logPath, []byte(snapshot), 0o644); err != nil {
+			return "", err
+		}
+	} else {
+		if _, err := os.Stat(logPath); errors.Is(err, os.ErrNotExist) {
+			snapshot, snapErr := tmuxCapturePane(paneTarget, seedLines, false)
+			if snapErr != nil {
+				snapshot = "agent pane unavailable"
+			}
+			if !strings.HasSuffix(snapshot, "\n") {
+				snapshot += "\n"
+			}
+			if err := os.WriteFile(logPath, []byte(snapshot), 0o644); err != nil {
+				return "", err
+			}
+		} else if err != nil {
+			return "", err
+		}
+	}
+	_ = runCmdQuiet("", "tmux", "pipe-pane", "-t", paneTarget)
+	pipeCommand := "cat >> '" + shellQuoteSingle(logPath) + "'"
+	if err := runCmdQuiet("", "tmux", "pipe-pane", "-t", paneTarget, pipeCommand); err != nil {
+		return "", err
+	}
+	return logPath, nil
+}
+
 func (m *Manager) FindWorktree(target string) (*Worktree, error) {
 	items, err := m.ListWorktrees()
 	if err != nil {
@@ -1014,30 +1200,18 @@ func (m *Manager) WorktreeDirty(path string) bool {
 }
 
 func (m *Manager) WorktreeDiff(path string, width int) (string, error) {
+	_ = width
 	status, err := runCmdOutput(path, "git", "--no-pager", "status", "--short")
 	if err != nil {
 		return "", err
 	}
-	staged, err := runCmdOutput(path, "git", "--no-pager", "diff", "--cached", "--no-color", "--no-ext-diff")
+	staged, err := runCmdOutput(path, "git", "--no-pager", "diff", "--cached", "--color=always", "--no-ext-diff")
 	if err != nil {
 		return "", err
 	}
-	unstaged, err := runCmdOutput(path, "git", "--no-pager", "diff", "--no-color", "--no-ext-diff")
+	unstaged, err := runCmdOutput(path, "git", "--no-pager", "diff", "--color=always", "--no-ext-diff")
 	if err != nil {
 		return "", err
-	}
-
-	if commandExists("delta") {
-		if rendered, renderErr := renderDiffWithDelta(staged, width); renderErr == nil {
-			staged = rendered
-		} else {
-			debugLogf("diff delta staged failed path=%q: %v", path, renderErr)
-		}
-		if rendered, renderErr := renderDiffWithDelta(unstaged, width); renderErr == nil {
-			unstaged = rendered
-		} else {
-			debugLogf("diff delta unstaged failed path=%q: %v", path, renderErr)
-		}
 	}
 
 	var b strings.Builder
@@ -1059,84 +1233,71 @@ func (m *Manager) WorktreeDiff(path string, width int) (string, error) {
 }
 
 func (m *Manager) WorktreeDiffFiles(path string) ([]DiffFile, error) {
-	out, err := runCmdOutput(path, "git", "--no-pager", "status", "--porcelain", "--untracked-files=all")
+	snapshot, err := m.WorktreeDiffSnapshotContext(context.Background(), path)
 	if err != nil {
 		return nil, err
 	}
-	lines := strings.Split(out, "\n")
-	files := make([]DiffFile, 0, len(lines))
-	seen := map[string]struct{}{}
-	for _, line := range lines {
-		line = strings.TrimRight(line, "\r")
-		if len(line) < 3 {
-			continue
-		}
-		status := line[:2]
-		file := strings.TrimSpace(line[3:])
-		if file == "" {
-			continue
-		}
-		if idx := strings.LastIndex(file, " -> "); idx >= 0 {
-			file = strings.TrimSpace(file[idx+4:])
-		}
-		if file == "" {
-			continue
-		}
-		if _, ok := seen[file]; ok {
-			continue
-		}
-		seen[file] = struct{}{}
-		files = append(files, DiffFile{
-			Path:   file,
-			Status: status,
-		})
-	}
-	return files, nil
+	return snapshot.Files, nil
 }
 
 func (m *Manager) WorktreeDiffForFile(path string, file DiffFile, width int) (string, error) {
+	return m.WorktreeDiffForFileContext(context.Background(), path, file, width)
+}
+
+func (m *Manager) WorktreeDiffSnapshotContext(ctx context.Context, path string) (WorktreeDiffSnapshot, error) {
+	out, err := runCmdBytesContext(path, ctx, "git", "--no-pager", "status", "--porcelain=v2", "--untracked-files=all", "-z")
+	if err != nil {
+		return WorktreeDiffSnapshot{}, err
+	}
+	return WorktreeDiffSnapshot{
+		Digest: string(out),
+		Files:  parsePorcelainV2DiffFiles(out),
+	}, nil
+}
+
+func (m *Manager) WorktreeDiffForFileContext(ctx context.Context, path string, file DiffFile, width int) (string, error) {
+	_ = width
 	statusRaw := file.Status
 	stageState, workState := parsePorcelainStatus(statusRaw)
 	statusLabel := strings.TrimSpace(statusRaw)
 
 	staged := ""
 	unstaged := ""
-	var err error
 
 	needsStaged := stageState != ' ' && stageState != '?'
 	needsUnstaged := workState != ' ' && workState != '?'
 
 	isUntracked := stageState == '?' && workState == '?'
 	if isUntracked {
-		unstaged, err = runCmdOutputAllowExitCodes(path, []int{1}, "git", "--no-pager", "diff", "--no-index", "--no-color", "--no-ext-diff", "--", "/dev/null", file.Path)
+		out, err := runCmdOutputContextAllowExitCodes(path, ctx, []int{1}, "git", "--no-pager", "diff", "--no-index", "--color=always", "--no-ext-diff", "--", "/dev/null", file.Path)
 		if err != nil {
 			return "", err
 		}
+		unstaged = out
 	} else {
+		var stagedErr error
+		var unstagedErr error
+		var wg sync.WaitGroup
 		if needsStaged {
-			staged, err = runCmdOutput(path, "git", "--no-pager", "diff", "--cached", "--no-color", "--no-ext-diff", "--", file.Path)
-			if err != nil {
-				return "", err
-			}
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				staged, stagedErr = runCmdOutputContext(path, ctx, "git", "--no-pager", "diff", "--cached", "--color=always", "--no-ext-diff", "--", file.Path)
+			}()
 		}
 		if needsUnstaged {
-			unstaged, err = runCmdOutput(path, "git", "--no-pager", "diff", "--no-color", "--no-ext-diff", "--", file.Path)
-			if err != nil {
-				return "", err
-			}
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				unstaged, unstagedErr = runCmdOutputContext(path, ctx, "git", "--no-pager", "diff", "--color=always", "--no-ext-diff", "--", file.Path)
+			}()
 		}
-	}
-
-	if commandExists("delta") {
-		if rendered, renderErr := renderDiffWithDelta(staged, width); renderErr == nil {
-			staged = rendered
-		} else {
-			debugLogf("diff delta staged file=%q path=%q failed: %v", file.Path, path, renderErr)
+		wg.Wait()
+		if stagedErr != nil {
+			return "", stagedErr
 		}
-		if rendered, renderErr := renderDiffWithDelta(unstaged, width); renderErr == nil {
-			unstaged = rendered
-		} else {
-			debugLogf("diff delta unstaged file=%q path=%q failed: %v", file.Path, path, renderErr)
+		if unstagedErr != nil {
+			return "", unstagedErr
 		}
 	}
 
@@ -1144,6 +1305,9 @@ func (m *Manager) WorktreeDiffForFile(path string, file DiffFile, width int) (st
 	b.WriteString(fmt.Sprintf("\x1b[36m# %s\x1b[0m", file.Path))
 	if statusLabel != "" {
 		b.WriteString(fmt.Sprintf(" \x1b[36m(%s)\x1b[0m", statusLabel))
+	}
+	if file.PreviousPath != "" {
+		b.WriteString(fmt.Sprintf(" \x1b[36m(from %s)\x1b[0m", file.PreviousPath))
 	}
 	b.WriteString("\n\n")
 
@@ -1166,6 +1330,66 @@ func (m *Manager) WorktreeDiffForFile(path string, file DiffFile, width int) (st
 	return strings.TrimSpace(b.String()), nil
 }
 
+func parsePorcelainV2DiffFiles(out []byte) []DiffFile {
+	parts := bytes.Split(out, []byte{0})
+	files := make([]DiffFile, 0, len(parts))
+	seen := map[string]struct{}{}
+	for i := 0; i < len(parts); i++ {
+		part := bytes.TrimSpace(parts[i])
+		if len(part) == 0 {
+			continue
+		}
+		switch part[0] {
+		case '1':
+			fields := strings.Fields(string(part))
+			if len(fields) < 9 {
+				continue
+			}
+			file := fields[8]
+			if _, ok := seen[file]; ok {
+				continue
+			}
+			seen[file] = struct{}{}
+			files = append(files, DiffFile{Path: file, Status: fields[1]})
+		case '2':
+			fields := strings.Fields(string(part))
+			if len(fields) < 10 || i+1 >= len(parts) {
+				continue
+			}
+			file := fields[9]
+			previous := strings.TrimSpace(string(parts[i+1]))
+			i++
+			if _, ok := seen[file]; ok {
+				continue
+			}
+			seen[file] = struct{}{}
+			files = append(files, DiffFile{Path: file, PreviousPath: previous, Status: fields[1]})
+		case 'u':
+			fields := strings.Fields(string(part))
+			if len(fields) < 11 {
+				continue
+			}
+			file := fields[10]
+			if _, ok := seen[file]; ok {
+				continue
+			}
+			seen[file] = struct{}{}
+			files = append(files, DiffFile{Path: file, Status: fields[1]})
+		case '?':
+			file := strings.TrimSpace(strings.TrimPrefix(string(part), "?"))
+			if file == "" {
+				continue
+			}
+			if _, ok := seen[file]; ok {
+				continue
+			}
+			seen[file] = struct{}{}
+			files = append(files, DiffFile{Path: file, Status: "??"})
+		}
+	}
+	return files
+}
+
 func parsePorcelainStatus(status string) (rune, rune) {
 	runes := []rune(status)
 	stageState := ' '
@@ -1177,26 +1401,6 @@ func parsePorcelainStatus(status string) (rune, rune) {
 		workState = runes[1]
 	}
 	return stageState, workState
-}
-
-func renderDiffWithDelta(diff string, width int) (string, error) {
-	if strings.TrimSpace(diff) == "" {
-		return "", nil
-	}
-	if !commandExists("delta") {
-		return diff, nil
-	}
-	args := []string{"--paging=never"}
-	if width > 0 {
-		args = append(args, "--width", strconv.Itoa(width))
-	}
-	out, err := runCmdBytesInput("", []byte(diff), "delta", args...)
-	if err != nil {
-		return "", err
-	}
-	rendered := strings.ReplaceAll(string(out), "\x1b[0K", "")
-	rendered = strings.ReplaceAll(rendered, "\x1b[K", "")
-	return strings.TrimRight(rendered, "\n"), nil
 }
 
 func (m *Manager) CreateWorktreeWithBranch(repoRoot, branch, worktreePath, baseBranch string) error {
@@ -1212,311 +1416,6 @@ func (m *Manager) CreateWorktreeWithBranch(repoRoot, branch, worktreePath, baseB
 		return err
 	}
 	return m.runGitWorktreeAdd(repoRoot, "-b", branch, worktreePath, baseBranch)
-}
-
-func (m *Manager) collectCopyCandidates(sourceRoot string) ([]string, error) {
-	out, err := runCmdBytes(sourceRoot, "git", "status", "--porcelain=v2", "-z", "--untracked-files=all", "--ignored=matching")
-	if err != nil {
-		return nil, err
-	}
-	records := bytes.Split(out, []byte{0})
-	set := map[string]struct{}{}
-	for _, rec := range records {
-		if len(rec) < 3 {
-			continue
-		}
-		line := string(rec)
-		if strings.HasPrefix(line, "? ") || strings.HasPrefix(line, "! ") {
-			p := strings.TrimSpace(line[2:])
-			p = strings.TrimSuffix(p, "/")
-			if p == "" {
-				continue
-			}
-			if p == ".git" || strings.HasPrefix(p, ".git/") {
-				continue
-			}
-			if m.shouldExcludeCopyPath(p) {
-				continue
-			}
-			set[p] = struct{}{}
-		}
-	}
-	res := make([]string, 0, len(set))
-	for p := range set {
-		res = append(res, p)
-	}
-	sort.Strings(res)
-	return res, nil
-}
-
-func (m *Manager) shouldExcludeCopyPath(rel string) bool {
-	if len(m.Cfg.CopyUntrackedExclude) == 0 {
-		return false
-	}
-	rel = normalizeCopyMatch(rel)
-	if rel == "" {
-		return false
-	}
-	for _, raw := range m.Cfg.CopyUntrackedExclude {
-		if copyPatternMatches(rel, raw) {
-			return true
-		}
-	}
-	return false
-}
-
-func normalizeCopyMatch(value string) string {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return ""
-	}
-	value = filepath.ToSlash(value)
-	value = strings.TrimPrefix(value, "./")
-	value = strings.TrimSuffix(value, "/")
-	return value
-}
-
-func copyPatternMatches(rel, pattern string) bool {
-	pat := normalizeCopyMatch(pattern)
-	if pat == "" {
-		return false
-	}
-	if strings.HasSuffix(pat, "/**") {
-		base := strings.TrimSuffix(pat, "/**")
-		if base == "" {
-			return true
-		}
-		return rel == base || strings.HasPrefix(rel, base+"/")
-	}
-	if !hasGlobMeta(pat) {
-		return rel == pat || strings.HasPrefix(rel, pat+"/")
-	}
-	if ok, _ := path.Match(pat, rel); ok {
-		return true
-	}
-	if !strings.Contains(pat, "/") {
-		base := path.Base(rel)
-		if ok, _ := path.Match(pat, base); ok {
-			return true
-		}
-	}
-	return false
-}
-
-func hasGlobMeta(value string) bool {
-	return strings.ContainsAny(value, "*?[")
-}
-
-func copyFile(src, dst string, info fs.FileInfo) error {
-	in, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer in.Close()
-
-	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-		return err
-	}
-	out, err := os.OpenFile(dst, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, info.Mode().Perm())
-	if err != nil {
-		return err
-	}
-	if _, err := io.Copy(out, in); err != nil {
-		_ = out.Close()
-		return err
-	}
-	if err := out.Close(); err != nil {
-		return err
-	}
-	return os.Chtimes(dst, time.Now(), info.ModTime())
-}
-
-func copySymlink(src, dst string) error {
-	target, err := os.Readlink(src)
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-		return err
-	}
-	_ = os.Remove(dst)
-	return os.Symlink(target, dst)
-}
-
-func copyTree(src, dst string) error {
-	return filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		rel, err := filepath.Rel(src, path)
-		if err != nil {
-			return err
-		}
-		target := dst
-		if rel != "." {
-			target = filepath.Join(dst, rel)
-		}
-
-		info, err := d.Info()
-		if err != nil {
-			return err
-		}
-
-		if info.Mode()&os.ModeSymlink != 0 {
-			return copySymlink(path, target)
-		}
-
-		if d.IsDir() {
-			if err := os.MkdirAll(target, info.Mode().Perm()); err != nil {
-				return err
-			}
-			return nil
-		}
-		return copyFile(path, target, info)
-	})
-}
-
-func copyPath(src, dst string) error {
-	info, err := os.Lstat(src)
-	if err != nil {
-		return err
-	}
-
-	if info.Mode()&os.ModeSymlink != 0 {
-		return copySymlink(src, dst)
-	}
-	if info.IsDir() {
-		if err := os.MkdirAll(dst, info.Mode().Perm()); err != nil {
-			return err
-		}
-		return copyTree(src, dst)
-	}
-	return copyFile(src, dst, info)
-}
-
-type copyCandidate struct {
-	Rel   string
-	Src   string
-	Dst   string
-	Files int
-	Bytes int64
-}
-
-func estimateCopyPath(path string) (int, int64, error) {
-	info, err := os.Lstat(path)
-	if err != nil {
-		return 0, 0, err
-	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		return 1, info.Size(), nil
-	}
-	if !info.IsDir() {
-		return 1, info.Size(), nil
-	}
-
-	files := 0
-	var bytes int64
-	err = filepath.WalkDir(path, func(p string, d fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if d.IsDir() {
-			return nil
-		}
-		di, err := d.Info()
-		if err != nil {
-			return err
-		}
-		files++
-		bytes += di.Size()
-		return nil
-	})
-	return files, bytes, err
-}
-
-func (m *Manager) CopyUntrackedAndIgnored(sourceRoot, targetRoot string, onProgress func(CopyProgress)) error {
-	start := time.Now()
-	candidates, err := m.collectCopyCandidates(sourceRoot)
-	if err != nil {
-		return err
-	}
-
-	debugLogf("copy_untracked start source=%q target=%q candidates=%d", sourceRoot, targetRoot, len(candidates))
-	if onProgress != nil {
-		onProgress(CopyProgress{Phase: "scan"})
-	}
-
-	plan := make([]copyCandidate, 0, len(candidates))
-	totalFiles := 0
-	var totalBytes int64
-	for _, rel := range candidates {
-		src := filepath.Join(sourceRoot, rel)
-		dst := filepath.Join(targetRoot, rel)
-		files, bytes, err := estimateCopyPath(src)
-		if err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				continue
-			}
-			return err
-		}
-		plan = append(plan, copyCandidate{
-			Rel:   rel,
-			Src:   src,
-			Dst:   dst,
-			Files: files,
-			Bytes: bytes,
-		})
-		totalFiles += files
-		totalBytes += bytes
-		if onProgress != nil {
-			onProgress(CopyProgress{
-				Phase:       "scan",
-				CurrentPath: rel,
-				TotalFiles:  totalFiles,
-				TotalBytes:  totalBytes,
-			})
-		}
-	}
-
-	copiedFiles := 0
-	var copiedBytes int64
-	for _, item := range plan {
-		if onProgress != nil {
-			onProgress(CopyProgress{
-				Phase:       "copy",
-				CurrentPath: item.Rel,
-				CopiedFiles: copiedFiles,
-				TotalFiles:  totalFiles,
-				CopiedBytes: copiedBytes,
-				TotalBytes:  totalBytes,
-			})
-		}
-		if _, err := os.Lstat(item.Src); err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				totalFiles -= item.Files
-				totalBytes -= item.Bytes
-				continue
-			}
-			return err
-		}
-		if err := copyPath(item.Src, item.Dst); err != nil {
-			return fmt.Errorf("copy %s: %w", item.Rel, err)
-		}
-		copiedFiles += item.Files
-		copiedBytes += item.Bytes
-	}
-
-	if onProgress != nil {
-		onProgress(CopyProgress{
-			Phase:       "copy",
-			CopiedFiles: copiedFiles,
-			TotalFiles:  totalFiles,
-			CopiedBytes: copiedBytes,
-			TotalBytes:  totalBytes,
-		})
-	}
-	debugLogf("copy_untracked done source=%q target=%q copied=%d total=%d bytes=%d/%d dur=%s", sourceRoot, targetRoot, copiedFiles, totalFiles, copiedBytes, totalBytes, time.Since(start))
-	return nil
 }
 
 func (m *Manager) CreateWorktreeFromExisting(repoRoot, branch, worktreePath string) error {
@@ -1615,15 +1514,6 @@ func (m *Manager) NewWorktree(opts NewOptions) (string, string, error) {
 	}
 
 	debugLogf("new_worktree created branch=%q path=%q", branch, worktreePath)
-	if opts.SkipCopyUntracked {
-		debugLogf("new_worktree copy_untracked_skipped path=%q", worktreePath)
-	} else {
-		if err := m.CopyUntrackedAndIgnored(repoRoot, worktreePath, opts.OnCopyProgress); err != nil {
-			debugLogf("new_worktree copy_untracked_failed path=%q: %v", worktreePath, err)
-			return "", "", err
-		}
-		debugLogf("new_worktree copied_untracked path=%q", worktreePath)
-	}
 
 	if opts.Launch {
 		if err := m.LaunchOrFocus(repoRoot, branch, worktreePath, true); err != nil {
@@ -1754,13 +1644,27 @@ func (m *Manager) StartAgent(opts AgentOptions) (string, bool, error) {
 
 	branch := worktreeBranchOrName(wt)
 	session := m.tmuxWorktreeSessionNameFrom(repoRoot, branch, wt.Path)
-	agentWindow := m.tmuxAgentWindowName(branch)
+	agentWindow := m.configuredAgentWindowName()
+	if agentWindow == "" {
+		agentWindow = m.tmuxAgentWindowName(branch)
+	}
 	alreadyRunning := m.tmuxHasSession(session) && m.tmuxWindowExists(session, agentWindow)
 
 	_, _, err = m.tmuxEnsureWorktreeWindow(repoRoot, branch, wt.Path)
 	if err != nil {
 		debugLogf("start_agent ensure_worktree_window failed path=%q branch=%q: %v", wt.Path, branch, err)
 		return "", false, err
+	}
+	if m.configuredAgentWindowName() != "" {
+		debugLogf("start_agent using configured agent window path=%q session=%q window=%q attach=%t already_running=%t", wt.Path, session, agentWindow, opts.Attach, alreadyRunning)
+		if opts.Attach {
+			attachOutside := os.Getenv("TMUX") == ""
+			if err := m.tmuxFocusWindow(session, agentWindow, attachOutside); err != nil {
+				debugLogf("start_agent focus configured window failed session=%q window=%q: %v", session, agentWindow, err)
+				return "", alreadyRunning, err
+			}
+		}
+		return wt.Path, alreadyRunning, nil
 	}
 	if err := m.tmuxEnsureWindow(session, agentWindow, wt.Path, m.agentCommand()); err != nil {
 		debugLogf("start_agent ensure_agent_window failed path=%q branch=%q window=%q: %v", wt.Path, branch, agentWindow, err)
@@ -1799,7 +1703,10 @@ func (m *Manager) StopAgent(target string) (string, bool, error) {
 	}
 
 	session := m.tmuxWorktreeSessionName(repoRoot, wt)
-	agentWindow := m.tmuxAgentWindowName(worktreeBranchOrName(wt))
+	agentWindow := m.configuredAgentWindowName()
+	if agentWindow == "" {
+		agentWindow = m.tmuxAgentWindowName(worktreeBranchOrName(wt))
+	}
 	if !m.tmuxHasSession(session) || !m.tmuxWindowExists(session, agentWindow) {
 		return wt.Path, false, nil
 	}
@@ -1823,7 +1730,10 @@ func (m *Manager) resolveWorktreeForTmux(target string) (string, *Worktree, erro
 
 func (m *Manager) agentPaneTarget(repoRoot string, wt *Worktree) string {
 	session := m.tmuxWorktreeSessionName(repoRoot, wt)
-	window := m.tmuxAgentWindowName(worktreeBranchOrName(wt))
+	window := m.configuredAgentWindowName()
+	if window == "" {
+		window = m.tmuxAgentWindowName(worktreeBranchOrName(wt))
+	}
 	if m.tmuxHasSession(session) {
 		if m.tmuxWindowExists(session, window) {
 			if target, ok := m.findAgentPaneInWindow(session, window); ok {
@@ -1856,7 +1766,7 @@ func (m *Manager) agentOutputForWorktree(repoRoot string, wt *Worktree, lines in
 	if !commandExists("tmux") {
 		return "", errors.New("tmux is required for agent workflows")
 	}
-	return tmuxCapturePaneWithCursor(m.agentPaneTarget(repoRoot, wt), lines)
+	return tmuxCapturePane(m.agentPaneTarget(repoRoot, wt), lines, false)
 }
 
 func (m *Manager) lazygitOutputForWorktree(repoRoot string, wt *Worktree, lines int) (string, error) {
@@ -1867,14 +1777,14 @@ func (m *Manager) lazygitOutputForWorktree(repoRoot string, wt *Worktree, lines 
 	if err != nil {
 		return "", err
 	}
-	return tmuxCapturePaneWithCursor(targetPane, lines)
+	return tmuxCapturePane(targetPane, lines, true)
 }
 
 func (m *Manager) editorOutputForWorktree(repoRoot string, wt *Worktree, lines int) (string, error) {
 	if !commandExists("tmux") {
 		return "", errors.New("tmux is required for editor output")
 	}
-	return tmuxCapturePaneWithCursor(m.editorPaneTarget(repoRoot, wt), lines)
+	return tmuxCapturePane(m.editorPaneTarget(repoRoot, wt), lines, true)
 }
 
 func (m *Manager) sendAgentKeysForWorktree(repoRoot string, wt *Worktree, keys ...string) error {
@@ -2004,6 +1914,16 @@ func matchesAgentCommand(pane tmuxPaneInfo, candidates map[string]struct{}) bool
 			return true
 		}
 	}
+	rawCurrent := strings.ToLower(strings.TrimSpace(pane.CurrentCommand))
+	rawStart := strings.ToLower(strings.TrimSpace(pane.StartCommand))
+	for candidate := range candidates {
+		if candidate == "" {
+			continue
+		}
+		if strings.Contains(rawCurrent, candidate) || strings.Contains(rawStart, candidate) {
+			return true
+		}
+	}
 	return false
 }
 
@@ -2042,6 +1962,11 @@ func (m *Manager) findAgentPaneInWindow(session, window string) (string, bool) {
 }
 
 func (m *Manager) findAgentPaneInSession(session string) (string, bool) {
+	if window := m.configuredAgentWindowName(); window != "" {
+		if paneID, ok := m.findAgentPaneInWindow(session, window); ok {
+			return paneID, true
+		}
+	}
 	panes, err := listSessionPanes(session)
 	if err != nil {
 		return "", false
@@ -2049,8 +1974,12 @@ func (m *Manager) findAgentPaneInSession(session string) (string, bool) {
 	candidates := m.agentExecCandidates()
 	var fallback *tmuxPaneInfo
 	var match *tmuxPaneInfo
+	var active *tmuxPaneInfo
 	for i := range panes {
 		pane := &panes[i]
+		if pane.Active && active == nil {
+			active = pane
+		}
 		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(pane.WindowName)), "agent") {
 			if fallback == nil || pane.Active {
 				fallback = pane
@@ -2070,6 +1999,54 @@ func (m *Manager) findAgentPaneInSession(session string) (string, bool) {
 	}
 	if fallback != nil {
 		return fallback.PaneID, true
+	}
+	if active != nil {
+		return active.PaneID, true
+	}
+	return "", false
+}
+
+func (m *Manager) findAgentWindowInSession(session string) (string, bool) {
+	if window := m.configuredAgentWindowName(); window != "" {
+		if paneID, ok := m.findAgentPaneInWindow(session, window); ok && strings.TrimSpace(paneID) != "" {
+			return window, true
+		}
+	}
+	panes, err := listSessionPanes(session)
+	if err != nil {
+		return "", false
+	}
+	candidates := m.agentExecCandidates()
+	var fallback *tmuxPaneInfo
+	var match *tmuxPaneInfo
+	var active *tmuxPaneInfo
+	for i := range panes {
+		pane := &panes[i]
+		if pane.Active && active == nil {
+			active = pane
+		}
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(pane.WindowName)), "agent") {
+			if fallback == nil || pane.Active {
+				fallback = pane
+			}
+		}
+		if matchesAgentCommand(*pane, candidates) {
+			if pane.Active {
+				return pane.WindowName, true
+			}
+			if match == nil {
+				match = pane
+			}
+		}
+	}
+	if match != nil {
+		return match.WindowName, true
+	}
+	if fallback != nil {
+		return fallback.WindowName, true
+	}
+	if active != nil {
+		return active.WindowName, true
 	}
 	return "", false
 }
@@ -2163,7 +2140,7 @@ func tmuxResizePane(paneTarget string, width, height int) error {
 	return runCmdQuiet("", "tmux", "resize-pane", "-t", paneTarget, "-x", strconv.Itoa(width), "-y", strconv.Itoa(height))
 }
 
-func tmuxCapturePaneWithCursor(paneTarget string, lines int) (string, error) {
+func tmuxCapturePane(paneTarget string, lines int, overlayCursor bool) (string, error) {
 	cursorFlag := "0"
 	cursorX, cursorY := 0, 0
 	paneHeight := lines
@@ -2171,18 +2148,20 @@ func tmuxCapturePaneWithCursor(paneTarget string, lines int) (string, error) {
 		paneHeight = 120
 	}
 
-	meta, err := runCmdOutput("", "tmux", "display-message", "-p", "-t", paneTarget, "#{cursor_flag} #{cursor_x} #{cursor_y} #{pane_height}")
-	if err == nil {
-		parts := strings.Fields(strings.TrimSpace(meta))
-		if len(parts) == 4 {
-			px, errX := strconv.Atoi(parts[1])
-			py, errY := strconv.Atoi(parts[2])
-			ph, errH := strconv.Atoi(parts[3])
-			if errX == nil && errY == nil && errH == nil && ph > 0 {
-				cursorFlag = parts[0]
-				cursorX = px
-				cursorY = py
-				paneHeight = ph
+	if overlayCursor {
+		meta, err := runCmdOutput("", "tmux", "display-message", "-p", "-t", paneTarget, "#{cursor_flag} #{cursor_x} #{cursor_y} #{pane_height}")
+		if err == nil {
+			parts := strings.Fields(strings.TrimSpace(meta))
+			if len(parts) == 4 {
+				px, errX := strconv.Atoi(parts[1])
+				py, errY := strconv.Atoi(parts[2])
+				ph, errH := strconv.Atoi(parts[3])
+				if errX == nil && errY == nil && errH == nil && ph > 0 {
+					cursorFlag = parts[0]
+					cursorX = px
+					cursorY = py
+					paneHeight = ph
+				}
 			}
 		}
 	}
@@ -2206,7 +2185,7 @@ func tmuxCapturePaneWithCursor(paneTarget string, lines int) (string, error) {
 		rows = []string{""}
 	}
 	text := strings.Join(rows, "\n")
-	if cursorFlag != "1" {
+	if !overlayCursor || cursorFlag != "1" {
 		return text, nil
 	}
 
@@ -2238,6 +2217,54 @@ func tmuxPaneActivity(paneTarget string) (int64, error) {
 		return 0, errors.New("missing tmux pane activity")
 	}
 	return strconv.ParseInt(out, 10, 64)
+}
+
+func readTailLines(path string, lines int) (string, error) {
+	if lines <= 0 {
+		lines = 200
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+
+	info, err := f.Stat()
+	if err != nil {
+		return "", err
+	}
+	size := info.Size()
+	if size == 0 {
+		return "", nil
+	}
+
+	const chunkSize int64 = 4096
+	var (
+		offset = size
+		buf    []byte
+	)
+	for offset > 0 && bytes.Count(buf, []byte{'\n'}) <= lines {
+		readSize := chunkSize
+		if offset < readSize {
+			readSize = offset
+		}
+		offset -= readSize
+		chunk := make([]byte, readSize)
+		if _, err := f.ReadAt(chunk, offset); err != nil && err != io.EOF {
+			return "", err
+		}
+		buf = append(chunk, buf...)
+	}
+
+	text := strings.TrimRight(string(buf), "\n")
+	if text == "" {
+		return "", nil
+	}
+	parts := strings.Split(text, "\n")
+	if len(parts) > lines {
+		parts = parts[len(parts)-lines:]
+	}
+	return strings.Join(parts, "\n"), nil
 }
 
 func overlayCursorInANSILine(line string, cursorCol int) string {
@@ -2460,29 +2487,58 @@ func (m *Manager) Remove(opts RemoveOptions) (string, []string, error) {
 		}
 	}
 
-	if opts.OnDeleteProgress != nil {
-		if err := m.removeWorktreeWithProgress(repoRoot, wt.Path, opts.OnDeleteProgress); err != nil {
-			return "", warnings, err
-		}
-	} else {
-		if err := m.runGitWorktreeRemove(repoRoot, wt.Path, opts.Force); err != nil {
-			if shouldRetryWorktreeRemove(err) {
-				_ = runCmdQuiet(repoRoot, "git", "worktree", "prune")
-				if session != "" && m.tmuxHasSession(session) {
-					_ = runCmdQuiet("", "tmux", "kill-session", "-t", session)
-				}
-				if retryErr := m.runGitWorktreeRemove(repoRoot, wt.Path, opts.Force); retryErr == nil {
-					warnings = append(warnings, "worktree removal required a retry after cleanup")
+	// Async: rename the worktree aside (instant) and reap its files in the
+	// background, so the caller returns immediately instead of waiting on a
+	// large tree (node_modules, build output). Falls back to a synchronous
+	// removal if the rename can't be done (e.g. a cross-filesystem move).
+	removedAsync := false
+	if opts.Async {
+		trash := trashPathFor(m.WorktreeRootDir(repoRoot), wt.Path)
+		if err := os.Rename(wt.Path, trash); err != nil {
+			debugLogf("remove_worktree async rename failed, falling back to sync path=%q: %v", wt.Path, err)
+		} else {
+			if err := runCmdQuiet(repoRoot, "git", "worktree", "prune"); err != nil {
+				warnings = append(warnings, fmt.Sprintf("worktree prune failed after removal: %v", err))
+			}
+			go func() {
+				start := time.Now()
+				if err := os.RemoveAll(trash); err != nil {
+					debugLogf("remove_worktree async reap failed path=%q: %v", trash, err)
 				} else {
-					return "", warnings, retryErr
+					debugLogf("remove_worktree async reap done path=%q dur=%s", trash, time.Since(start))
 				}
-			} else {
+			}()
+			removedAsync = true
+		}
+	}
+
+	// worktree already detached + pruned above when removedAsync; otherwise
+	// remove it synchronously here.
+	if !removedAsync {
+		if opts.OnDeleteProgress != nil {
+			if err := m.removeWorktreeWithProgress(repoRoot, wt.Path, opts.OnDeleteProgress); err != nil {
 				return "", warnings, err
+			}
+		} else {
+			if err := m.runGitWorktreeRemove(repoRoot, wt.Path, opts.Force); err != nil {
+				if shouldRetryWorktreeRemove(err) {
+					_ = runCmdQuiet(repoRoot, "git", "worktree", "prune")
+					if session != "" && m.tmuxHasSession(session) {
+						_ = runCmdQuiet("", "tmux", "kill-session", "-t", session)
+					}
+					if retryErr := m.runGitWorktreeRemove(repoRoot, wt.Path, opts.Force); retryErr == nil {
+						warnings = append(warnings, "worktree removal required a retry after cleanup")
+					} else {
+						return "", warnings, retryErr
+					}
+				} else {
+					return "", warnings, err
+				}
 			}
 		}
 	}
 
-	if opts.OnDeleteProgress != nil {
+	if !removedAsync && opts.OnDeleteProgress != nil {
 		if err := runCmdQuiet(repoRoot, "git", "worktree", "prune"); err != nil {
 			warnings = append(warnings, fmt.Sprintf("worktree prune failed after removal: %v", err))
 		}
@@ -2682,6 +2738,7 @@ func (m *Manager) Doctor() DoctorReport {
 			report.Lines = append(report.Lines, fmt.Sprintf("warn %s (optional)", opt))
 		}
 	}
+	report.Lines = append(report.Lines, daemonInfoLine(m.Cfg))
 
 	repoRoot, err := m.RequireRepo()
 	if err != nil {
@@ -2714,6 +2771,57 @@ func (m *Manager) Doctor() DoctorReport {
 
 func runCmdBytes(dir, name string, args ...string) ([]byte, error) {
 	return runCmdBytesWithTimeout(dir, 0, name, args...)
+}
+
+func runCmdBytesContext(dir string, ctx context.Context, name string, args ...string) ([]byte, error) {
+	return runCmdBytesContextAllowExitCodes(dir, ctx, nil, name, args...)
+}
+
+func runCmdBytesContextAllowExitCodes(dir string, ctx context.Context, allowedExitCodes []int, name string, args ...string) ([]byte, error) {
+	start := time.Now()
+	debugLogf("cmd start dir=%q name=%q args=%q allowed_exit=%v ctx=true", dir, name, strings.Join(args, " "), allowedExitCodes)
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	allowed := map[int]struct{}{}
+	for _, code := range allowedExitCodes {
+		allowed[code] = struct{}{}
+	}
+
+	cmd := exec.CommandContext(ctx, name, args...)
+	if dir != "" {
+		cmd.Dir = dir
+	}
+	out, err := cmd.CombinedOutput()
+	elapsed := time.Since(start)
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			if _, ok := allowed[exitErr.ExitCode()]; ok {
+				debugLogf("cmd ok-allowed-exit dur=%s dir=%q name=%q args=%q exit=%d out_bytes=%d", elapsed, dir, name, strings.Join(args, " "), exitErr.ExitCode(), len(out))
+				return out, nil
+			}
+		}
+		trimmed := strings.TrimSpace(string(out))
+		if len(trimmed) > 600 {
+			trimmed = trimmed[:600] + "...(truncated)"
+		}
+		debugLogf("cmd fail dur=%s dir=%q name=%q args=%q err=%v out=%q", elapsed, dir, name, strings.Join(args, " "), err, trimmed)
+		if errors.Is(ctx.Err(), context.Canceled) {
+			return nil, ctx.Err()
+		}
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			if trimmed != "" {
+				return nil, fmt.Errorf("%s %s timed out: %s", name, strings.Join(args, " "), trimmed)
+			}
+			return nil, fmt.Errorf("%s %s timed out", name, strings.Join(args, " "))
+		}
+		if trimmed != "" {
+			return nil, fmt.Errorf("%s %s failed: %w: %s", name, strings.Join(args, " "), err, trimmed)
+		}
+		return nil, fmt.Errorf("%s %s failed: %w", name, strings.Join(args, " "), err)
+	}
+	debugLogf("cmd ok dur=%s dir=%q name=%q args=%q out_bytes=%d", elapsed, dir, name, strings.Join(args, " "), len(out))
+	return out, nil
 }
 
 func runCmdBytesWithTimeout(dir string, timeout time.Duration, name string, args ...string) ([]byte, error) {
@@ -2825,8 +2933,24 @@ func runCmdOutput(dir, name string, args ...string) (string, error) {
 	return strings.TrimRight(string(out), "\n"), nil
 }
 
+func runCmdOutputContext(dir string, ctx context.Context, name string, args ...string) (string, error) {
+	out, err := runCmdBytesContext(dir, ctx, name, args...)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimRight(string(out), "\n"), nil
+}
+
 func runCmdOutputAllowExitCodes(dir string, allowedExitCodes []int, name string, args ...string) (string, error) {
 	out, err := runCmdBytesAllowExitCodes(dir, allowedExitCodes, name, args...)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimRight(string(out), "\n"), nil
+}
+
+func runCmdOutputContextAllowExitCodes(dir string, ctx context.Context, allowedExitCodes []int, name string, args ...string) (string, error) {
+	out, err := runCmdBytesContextAllowExitCodes(dir, ctx, allowedExitCodes, name, args...)
 	if err != nil {
 		return "", err
 	}

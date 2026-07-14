@@ -8,7 +8,9 @@ require (
 )
 
 require (
+	github.com/ActiveState/vt10x v1.3.1 // indirect
 	github.com/BurntSushi/toml v1.6.0 // indirect
+	github.com/Netflix/go-expect v0.0.0-20180615182759-c93bf25de8e8 // indirect
 	github.com/aymanbagabas/go-osc52/v2 v2.0.1 // indirect
 	github.com/charmbracelet/colorprofile v0.2.3-0.20250311203215-f60798e515dc // indirect
 	github.com/charmbracelet/lipgloss v1.1.0 // indirect
@@ -17,6 +19,7 @@ require (
 	github.com/charmbracelet/x/term v0.2.1 // indirect
 	github.com/gdamore/encoding v1.0.1 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
+	github.com/kr/pty v1.1.1 // indirect
 	github.com/lucasb-eyer/go-colorful v1.2.0 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/mattn/go-runewidth v0.0.16 // indirect

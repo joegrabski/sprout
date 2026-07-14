@@ -27,7 +27,9 @@ type PaneLayout struct {
 // WindowConfig defines a named tmux window with panes for the structured config.
 type WindowConfig struct {
 	Name   string       `toml:"name"`
+	Role   string       `toml:"role"`   // optional semantic role: agent
 	Layout string       `toml:"layout"` // tmux layout: even-horizontal, even-vertical, tiled, main-horizontal, main-vertical
+	URL    string       `toml:"url"`    // optional URL this window/service advertises; for a worktree-independent preview service (e.g. an ngrok agent) it's also probed on promote so a live instance is reused instead of started twice
 	Panes  []PaneConfig `toml:"panes"`
 }
 
@@ -37,12 +39,27 @@ type PaneConfig struct {
 	Run string `toml:"run"` // command to execute
 }
 
+// PreviewSyncSet describes one key inside a synced config file: the dotted JSON
+// path to write and the ngrok tunnel whose live public URL supplies the value.
+type PreviewSyncSet struct {
+	Path     string `toml:"path"`     // dotted JSON path, e.g. "EndpointConfig.DriveApi"
+	Tunnel   string `toml:"tunnel"`   // ngrok tunnel name to read the public URL from
+	Template string `toml:"template"` // optional value template; "{url}" is replaced by the tunnel URL (default "{url}")
+}
+
+// PreviewSync describes a JSON file whose keys are kept in sync with the live
+// ngrok tunnel URLs whenever a worktree is promoted to preview.
+type PreviewSync struct {
+	File          string           `toml:"file"`           // target file: abs path, ~/..., {worktree}/..., relative-to-worktree
+	ReloadWindows []string         `toml:"reload_windows"` // preview windows to restart only when this file's contents change
+	Sets          []PreviewSyncSet `toml:"set"`            // keys to write from tunnel URLs
+}
+
 type Config struct {
 	BaseBranch           string
 	WorktreeRootTemplate string
 	AutoLaunch           bool
 	AutoStartAgent       bool
-	CopyUntrackedExclude []string
 	UpdateCheck          bool
 	SessionTools         []string
 	LaunchNvim           bool
@@ -52,8 +69,20 @@ type Config struct {
 	AgentCommands        map[string]string
 	SessionPrefix        string
 	EmitCDMarker         bool
+	DaemonEnabled        bool
+	DaemonSocketPath     string
+	DaemonRefreshMs      int
+	DaemonStaleAfterMs   int
 	SessionLayouts       map[string]SessionLayout
 	Windows              []WindowConfig // ordered window/pane definitions from [[windows]]
+	PreviewWindows       []WindowConfig // long-running services for the preview worktree from [[preview_windows]]
+	PreviewSessionSuffix string         // tmux session suffix for the dedicated preview session
+	PreviewCommandPrefix string         // optional prefix wrapped around each preview service command (e.g. "portless run")
+	PreviewAutoAttach    bool           // attach to the preview session after promoting (default false: run detached)
+	BootstrapLinks       []string       // gitignored paths to symlink from the main worktree into each new worktree
+	BootstrapSteps       []PaneConfig   // commands to run when bootstrapping a worktree (from [[bootstrap]])
+	PreviewSyncs         []PreviewSync  // config files kept in sync with live tunnel URLs on promote (from [[preview_sync]])
+	PreviewTunnelAPI     string         // ngrok agent local API used to resolve tunnel name -> public URL
 }
 
 func DefaultConfig() Config {
@@ -62,7 +91,6 @@ func DefaultConfig() Config {
 		WorktreeRootTemplate: "../{repo}.worktrees",
 		AutoLaunch:           true,
 		AutoStartAgent:       true,
-		CopyUntrackedExclude: []string{},
 		UpdateCheck:          true,
 		SessionTools:         defaultSessionTools(),
 		LaunchNvim:           true,
@@ -75,7 +103,13 @@ func DefaultConfig() Config {
 			"claude": "claude",
 			"gemini": "gemini",
 		},
-		SessionPrefix: "sprout",
+		SessionPrefix:        "sprout",
+		PreviewSessionSuffix: "preview",
+		PreviewTunnelAPI:     "http://127.0.0.1:4040/api/tunnels",
+		DaemonEnabled:        true,
+		DaemonSocketPath:     "~/.cache/sprout/daemon.sock",
+		DaemonRefreshMs:      750,
+		DaemonStaleAfterMs:   3000,
 	}
 }
 
@@ -199,12 +233,6 @@ func parseTOMLFlat(path string, cfg *Config) error {
 				return fmt.Errorf("%s:%d invalid auto_start_agent: %w", path, lineNum, err)
 			}
 			cfg.AutoStartAgent = v
-		case "copy_untracked_exclude":
-			v, err := parseStringArray(value)
-			if err != nil {
-				return fmt.Errorf("%s:%d invalid copy_untracked_exclude: %w", path, lineNum, err)
-			}
-			cfg.CopyUntrackedExclude = v
 		case "update_check":
 			v, err := parseBool(value)
 			if err != nil {
@@ -249,6 +277,60 @@ func parseTOMLFlat(path string, cfg *Config) error {
 				return fmt.Errorf("%s:%d invalid session_prefix: %w", path, lineNum, err)
 			}
 			cfg.SessionPrefix = v
+		case "preview_session_suffix":
+			v, err := parseString(value)
+			if err != nil {
+				return fmt.Errorf("%s:%d invalid preview_session_suffix: %w", path, lineNum, err)
+			}
+			cfg.PreviewSessionSuffix = v
+		case "preview_command_prefix":
+			v, err := parseString(value)
+			if err != nil {
+				return fmt.Errorf("%s:%d invalid preview_command_prefix: %w", path, lineNum, err)
+			}
+			cfg.PreviewCommandPrefix = v
+		case "preview_auto_attach":
+			v, err := parseBool(value)
+			if err != nil {
+				return fmt.Errorf("%s:%d invalid preview_auto_attach: %w", path, lineNum, err)
+			}
+			cfg.PreviewAutoAttach = v
+		case "preview_tunnel_api":
+			v, err := parseString(value)
+			if err != nil {
+				return fmt.Errorf("%s:%d invalid preview_tunnel_api: %w", path, lineNum, err)
+			}
+			cfg.PreviewTunnelAPI = v
+		case "bootstrap_links":
+			v, err := parseStringArray(value)
+			if err != nil {
+				return fmt.Errorf("%s:%d invalid bootstrap_links: %w", path, lineNum, err)
+			}
+			cfg.BootstrapLinks = v
+		case "daemon_enabled":
+			v, err := parseBool(value)
+			if err != nil {
+				return fmt.Errorf("%s:%d invalid daemon_enabled: %w", path, lineNum, err)
+			}
+			cfg.DaemonEnabled = v
+		case "daemon_socket_path":
+			v, err := parseString(value)
+			if err != nil {
+				return fmt.Errorf("%s:%d invalid daemon_socket_path: %w", path, lineNum, err)
+			}
+			cfg.DaemonSocketPath = v
+		case "daemon_refresh_ms":
+			v, err := strconv.Atoi(strings.TrimSpace(value))
+			if err != nil {
+				return fmt.Errorf("%s:%d invalid daemon_refresh_ms: %w", path, lineNum, err)
+			}
+			cfg.DaemonRefreshMs = v
+		case "daemon_stale_after_ms":
+			v, err := strconv.Atoi(strings.TrimSpace(value))
+			if err != nil {
+				return fmt.Errorf("%s:%d invalid daemon_stale_after_ms: %w", path, lineNum, err)
+			}
+			cfg.DaemonStaleAfterMs = v
 		default:
 			if strings.HasPrefix(key, "window_") {
 				// Format: window_<winname> = ["cmd1", "cmd2"]
@@ -562,11 +644,6 @@ func applyEnvOverrides(cfg *Config) {
 			cfg.UpdateCheck = b
 		}
 	}
-	if v := os.Getenv("SPROUT_COPY_UNTRACKED_EXCLUDE"); v != "" {
-		if items, err := parseStringListEnv(v); err == nil {
-			cfg.CopyUntrackedExclude = items
-		}
-	}
 	if v := os.Getenv("SPROUT_LAUNCH_NVIM"); v != "" {
 		if b, err := parseBool(v); err == nil {
 			cfg.LaunchNvim = b
@@ -613,6 +690,43 @@ func applyEnvOverrides(cfg *Config) {
 	if v := os.Getenv("SPROUT_SESSION_PREFIX"); v != "" {
 		cfg.SessionPrefix = v
 	}
+	if v := os.Getenv("SPROUT_PREVIEW_SESSION_SUFFIX"); v != "" {
+		cfg.PreviewSessionSuffix = v
+	}
+	if v, ok := os.LookupEnv("SPROUT_PREVIEW_COMMAND_PREFIX"); ok {
+		cfg.PreviewCommandPrefix = v
+	}
+	if v := os.Getenv("SPROUT_PREVIEW_AUTO_ATTACH"); v != "" {
+		if b, err := parseBool(v); err == nil {
+			cfg.PreviewAutoAttach = b
+		}
+	}
+	if v, ok := os.LookupEnv("SPROUT_PREVIEW_TUNNEL_API"); ok {
+		cfg.PreviewTunnelAPI = v
+	}
+	if v := os.Getenv("SPROUT_BOOTSTRAP_LINKS"); v != "" {
+		if items, err := parseStringListEnv(v); err == nil {
+			cfg.BootstrapLinks = items
+		}
+	}
+	if v := os.Getenv("SPROUT_DAEMON_ENABLED"); v != "" {
+		if b, err := parseBool(v); err == nil {
+			cfg.DaemonEnabled = b
+		}
+	}
+	if v := os.Getenv("SPROUT_DAEMON_SOCKET"); v != "" {
+		cfg.DaemonSocketPath = v
+	}
+	if v := os.Getenv("SPROUT_DAEMON_REFRESH_MS"); v != "" {
+		if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil {
+			cfg.DaemonRefreshMs = n
+		}
+	}
+	if v := os.Getenv("SPROUT_DAEMON_STALE_AFTER_MS"); v != "" {
+		if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil {
+			cfg.DaemonStaleAfterMs = n
+		}
+	}
 }
 
 // parseTOMLStructured uses BurntSushi/toml to decode the structured [[windows]]
@@ -623,11 +737,17 @@ func applyEnvOverrides(cfg *Config) {
 // isRepoConfig=false → reads [[repos.<repoName>.windows]] (from global config)
 func parseTOMLStructured(path string, cfg *Config, repoName string, isRepoConfig bool) error {
 	type rawRepo struct {
-		Windows []WindowConfig `toml:"windows"`
+		Windows        []WindowConfig `toml:"windows"`
+		PreviewWindows []WindowConfig `toml:"preview_windows"`
+		Bootstrap      []PaneConfig   `toml:"bootstrap"`
+		PreviewSync    []PreviewSync  `toml:"preview_sync"`
 	}
 	type rawFile struct {
-		Windows []WindowConfig     `toml:"windows"`
-		Repos   map[string]rawRepo `toml:"repos"`
+		Windows        []WindowConfig     `toml:"windows"`
+		PreviewWindows []WindowConfig     `toml:"preview_windows"`
+		Bootstrap      []PaneConfig       `toml:"bootstrap"`
+		PreviewSync    []PreviewSync      `toml:"preview_sync"`
+		Repos          map[string]rawRepo `toml:"repos"`
 	}
 
 	var raw rawFile
@@ -639,9 +759,29 @@ func parseTOMLStructured(path string, cfg *Config, repoName string, isRepoConfig
 		if len(raw.Windows) > 0 {
 			cfg.Windows = raw.Windows
 		}
+		if len(raw.PreviewWindows) > 0 {
+			cfg.PreviewWindows = raw.PreviewWindows
+		}
+		if len(raw.Bootstrap) > 0 {
+			cfg.BootstrapSteps = raw.Bootstrap
+		}
+		if len(raw.PreviewSync) > 0 {
+			cfg.PreviewSyncs = raw.PreviewSync
+		}
 	} else if repoName != "" {
-		if repoCfg, ok := raw.Repos[repoName]; ok && len(repoCfg.Windows) > 0 {
-			cfg.Windows = repoCfg.Windows
+		if repoCfg, ok := raw.Repos[repoName]; ok {
+			if len(repoCfg.Windows) > 0 {
+				cfg.Windows = repoCfg.Windows
+			}
+			if len(repoCfg.PreviewWindows) > 0 {
+				cfg.PreviewWindows = repoCfg.PreviewWindows
+			}
+			if len(repoCfg.Bootstrap) > 0 {
+				cfg.BootstrapSteps = repoCfg.Bootstrap
+			}
+			if len(repoCfg.PreviewSync) > 0 {
+				cfg.PreviewSyncs = repoCfg.PreviewSync
+			}
 		}
 	}
 	return nil

@@ -3,7 +3,7 @@
 *.out
 bin/
 apps/sprout/bin/
-sprout
+/sprout
 go.work.sum
 
 # Web

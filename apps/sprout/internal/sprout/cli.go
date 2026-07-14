@@ -68,11 +68,63 @@ var (
 		Run:   runDetach,
 	}
 
+	previewCmd = &cobra.Command{
+		Use:   "preview [target]",
+		Short: "Manage the preview worktree (runs configured services from a chosen worktree)",
+		Long: "Designate one worktree as the preview: a dedicated tmux session runs the\n" +
+			"configured [[preview_windows]] services from that worktree. Promoting another\n" +
+			"worktree restarts the services from its path.\n\n" +
+			"  sprout preview            show current preview status\n" +
+			"  sprout preview <target>   promote a worktree to preview\n" +
+			"  sprout preview stop       stop the preview session\n" +
+			"  sprout preview restart    restart services from the current preview worktree\n" +
+			"  sprout preview sync       rewrite [[preview_sync]] configs from live tunnel URLs\n" +
+			"  sprout preview logs <service>   show recent output of a preview service",
+		Run: runPreview,
+	}
+
+	previewStatusCmd = &cobra.Command{
+		Use:   "status",
+		Short: "Show the current preview worktree and service state",
+		Run:   runPreviewStatus,
+	}
+
+	previewStopCmd = &cobra.Command{
+		Use:   "stop",
+		Short: "Stop the preview session and clear the preview worktree",
+		Run:   runPreviewStop,
+	}
+
+	previewRestartCmd = &cobra.Command{
+		Use:   "restart",
+		Short: "Restart services from the current preview worktree",
+		Run:   runPreviewRestart,
+	}
+
+	previewSyncCmd = &cobra.Command{
+		Use:   "sync",
+		Short: "Rewrite [[preview_sync]] configs from the live tunnel URLs",
+		Run:   runPreviewSync,
+	}
+
+	previewLogsCmd = &cobra.Command{
+		Use:   "logs <service>",
+		Short: "Show recent output of a preview service",
+		Args:  cobra.ExactArgs(1),
+		Run:   runPreviewLogs,
+	}
+
 	agentCmd = &cobra.Command{
 		Use:   "agent <action> <target>",
 		Short: "Manage agents (start, stop, attach)",
 		Args:  cobra.ExactArgs(2),
 		Run:   runAgent,
+	}
+
+	bootstrapCmd = &cobra.Command{
+		Use:   "bootstrap [target]",
+		Short: "Bootstrap a worktree: symlink local config from the main worktree and run setup commands",
+		Run:   runBootstrap,
 	}
 
 	rmCmd = &cobra.Command{
@@ -108,6 +160,36 @@ var (
 			fmt.Println(Version)
 		},
 	}
+
+	daemonCmd = &cobra.Command{
+		Use:   "daemon",
+		Short: "Manage sprout metadata daemon",
+	}
+
+	daemonStartCmd = &cobra.Command{
+		Use:   "start",
+		Short: "Start daemon in background",
+		Run:   runDaemonStart,
+	}
+
+	daemonStopCmd = &cobra.Command{
+		Use:   "stop",
+		Short: "Stop daemon",
+		Run:   runDaemonStop,
+	}
+
+	daemonStatusCmd = &cobra.Command{
+		Use:   "status",
+		Short: "Show daemon status",
+		Run:   runDaemonStatus,
+	}
+
+	daemonRunCmd = &cobra.Command{
+		Use:    "run",
+		Short:  "Run daemon in foreground",
+		Hidden: true,
+		Run:    runDaemonRun,
+	}
 )
 
 func emitCDMarkerIfEnabled(cfg Config, path string) {
@@ -120,6 +202,7 @@ func init() {
 	newCmd.Flags().String("from", "", "Base branch to create from")
 	newCmd.Flags().String("from-branch", "", "Existing branch to create worktree from")
 	newCmd.Flags().Bool("no-launch", false, "Do not launch tmux session")
+	newCmd.Flags().Bool("no-bootstrap", false, "Do not run bootstrap (symlinks + setup commands) after creating")
 
 	listCmd.Flags().Bool("json", false, "Output in JSON format")
 
@@ -131,10 +214,19 @@ func init() {
 	rmCmd.Flags().Bool("force", false, "Force removal")
 	rmCmd.Flags().Bool("delete-branch", false, "Delete the branch associated with the worktree")
 
-	rootCmd.AddCommand(uiCmd, newCmd, listCmd, goCmd, pathCmd, launchCmd, detachCmd, agentCmd, rmCmd, doctorCmd, shellHookCmd, versionCmd)
+	previewCmd.Flags().Bool("attach", false, "Attach to the preview session after promoting")
+	previewStatusCmd.Flags().Bool("json", false, "Output in JSON format")
+	previewRestartCmd.Flags().Bool("attach", false, "Attach to the preview session after restarting")
+	previewLogsCmd.Flags().IntP("lines", "n", 200, "Number of lines to capture")
+	previewCmd.AddCommand(previewStatusCmd, previewStopCmd, previewRestartCmd, previewSyncCmd, previewLogsCmd)
+
+	daemonCmd.AddCommand(daemonStartCmd, daemonStopCmd, daemonStatusCmd, daemonRunCmd)
+	rootCmd.AddCommand(uiCmd, newCmd, listCmd, goCmd, pathCmd, launchCmd, detachCmd, agentCmd, previewCmd, bootstrapCmd, rmCmd, doctorCmd, shellHookCmd, versionCmd, daemonCmd)
 }
 
 func getManager() *Manager {
+	done := startProfileStage("config_load")
+	defer done()
 	cfg, err := LoadConfig()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error loading config: %v\n", err)
@@ -152,66 +244,118 @@ func Run(args []string) int {
 	return 0
 }
 
-func runNew(cmd *cobra.Command, args []string) {
-	mgr := getManager()
-	from, _ := cmd.Flags().GetString("from")
-	fromBranch, _ := cmd.Flags().GetString("from-branch")
-	noLaunch, _ := cmd.Flags().GetBool("no-launch")
+// finishCreate runs the post-creation steps for a new worktree: bootstrap the
+// worktree (symlink local config + install deps), start the agent, then launch.
+// Bootstrap and launch run before attaching so deps are ready first.
+// printBootstrapStep prints a bootstrap command step to stdout (CLI feedback).
+func printBootstrapStep(dir, run string) {
+	fmt.Println(StyleDim.Render(fmt.Sprintf("→ [%s] %s", dir, run)))
+}
 
-	if fromBranch != "" {
-		// Existing branch mode
-		launch := mgr.Cfg.AutoLaunch && !noLaunch
-		_, path, err := mgr.NewWorktree(NewOptions{
-			FromBranch: fromBranch,
-			Launch:     launch,
-		})
-		if err != nil {
-			fmt.Fprintln(os.Stderr, ErrorMsg(err.Error()))
-			os.Exit(1)
+func finishCreate(mgr *Manager, path string, launch, noBootstrap bool) {
+	if !noBootstrap && mgr.HasBootstrap() {
+		fmt.Println(InfoMsg("Bootstrapping worktree..."))
+		if _, err := mgr.Bootstrap(BootstrapOptions{Target: path, OnStep: printBootstrapStep}); err != nil {
+			fmt.Fprintln(os.Stderr, WarnMsg(fmt.Sprintf("bootstrap failed: %v", err)))
 		}
-		if mgr.Cfg.AutoStartAgent {
-			if _, _, err := mgr.StartAgent(AgentOptions{Target: path, Attach: false}); err != nil {
-				fmt.Fprintln(os.Stderr, WarnMsg(fmt.Sprintf("created worktree but could not auto-start agent: %v", err)))
-			}
-		}
-		fmt.Println(SuccessMsg(fmt.Sprintf("Created worktree from %s: %s", StyleBranch.Render(fromBranch), StylePath.Render(path))))
-		emitCDMarkerIfEnabled(mgr.Cfg, path)
-		return
-	}
-
-	if len(args) < 2 {
-		fmt.Fprintln(os.Stderr, ErrorMsg("usage: sprout new <type> <name> [--from <base>] [--no-launch]"))
-		fmt.Fprintln(os.Stderr, StyleDim.Render("       or: sprout new --from-branch <existing-branch>"))
-		os.Exit(1)
-	}
-
-	launch := mgr.Cfg.AutoLaunch && !noLaunch
-	branchType := args[0]
-	name := strings.Join(args[1:], " ")
-	_, path, err := mgr.NewWorktree(NewOptions{
-		Type:       branchType,
-		Name:       name,
-		BaseBranch: from,
-		Launch:     launch,
-	})
-	if err != nil {
-		fmt.Fprintln(os.Stderr, ErrorMsg(err.Error()))
-		os.Exit(1)
 	}
 	if mgr.Cfg.AutoStartAgent {
 		if _, _, err := mgr.StartAgent(AgentOptions{Target: path, Attach: false}); err != nil {
 			fmt.Fprintln(os.Stderr, WarnMsg(fmt.Sprintf("created worktree but could not auto-start agent: %v", err)))
 		}
 	}
+	if launch {
+		if _, err := mgr.Launch(LaunchOptions{Target: path}); err != nil {
+			fmt.Fprintln(os.Stderr, WarnMsg(fmt.Sprintf("created worktree but could not launch: %v", err)))
+		}
+	}
+}
+
+func runNew(cmd *cobra.Command, args []string) {
+	mgr := getManager()
+	from, _ := cmd.Flags().GetString("from")
+	fromBranch, _ := cmd.Flags().GetString("from-branch")
+	noLaunch, _ := cmd.Flags().GetBool("no-launch")
+	noBootstrap, _ := cmd.Flags().GetBool("no-bootstrap")
+	launch := mgr.Cfg.AutoLaunch && !noLaunch
+
+	if fromBranch != "" {
+		// Existing branch mode
+		_, path, err := mgr.NewWorktree(NewOptions{FromBranch: fromBranch})
+		if err != nil {
+			fmt.Fprintln(os.Stderr, ErrorMsg(err.Error()))
+			os.Exit(1)
+		}
+		fmt.Println(SuccessMsg(fmt.Sprintf("Created worktree from %s: %s", StyleBranch.Render(fromBranch), StylePath.Render(path))))
+		finishCreate(mgr, path, launch, noBootstrap)
+		emitCDMarkerIfEnabled(mgr.Cfg, path)
+		return
+	}
+
+	if len(args) < 2 {
+		fmt.Fprintln(os.Stderr, ErrorMsg("usage: sprout new <type> <name> [--from <base>] [--no-launch] [--no-bootstrap]"))
+		fmt.Fprintln(os.Stderr, StyleDim.Render("       or: sprout new --from-branch <existing-branch>"))
+		os.Exit(1)
+	}
+
+	branchType := args[0]
+	name := strings.Join(args[1:], " ")
+	_, path, err := mgr.NewWorktree(NewOptions{
+		Type:       branchType,
+		Name:       name,
+		BaseBranch: from,
+	})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, ErrorMsg(err.Error()))
+		os.Exit(1)
+	}
 	fmt.Println(SuccessMsg(fmt.Sprintf("Created worktree: %s", StylePath.Render(path))))
+	finishCreate(mgr, path, launch, noBootstrap)
 	emitCDMarkerIfEnabled(mgr.Cfg, path)
+}
+
+func runBootstrap(cmd *cobra.Command, args []string) {
+	mgr := getManager()
+	if !mgr.HasBootstrap() {
+		fmt.Fprintln(os.Stderr, WarnMsg("no bootstrap configured; add bootstrap_links or [[bootstrap]] to .sprout.toml"))
+		os.Exit(1)
+	}
+	target := ""
+	if len(args) > 0 {
+		target = args[0]
+	}
+	res, err := mgr.Bootstrap(BootstrapOptions{Target: target, OnStep: printBootstrapStep})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, ErrorMsg(err.Error()))
+		os.Exit(1)
+	}
+	for _, l := range res.LinksCreated {
+		fmt.Println(SuccessMsg("linked " + l))
+	}
+	if len(res.LinksMissing) > 0 {
+		fmt.Println(WarnMsg(fmt.Sprintf("missing in main worktree (not linked): %s", strings.Join(res.LinksMissing, ", "))))
+	}
+	fmt.Println(SuccessMsg(fmt.Sprintf("Bootstrapped %s", StylePath.Render(res.WorktreePath))))
 }
 
 func runList(cmd *cobra.Command, args []string) {
 	mgr := getManager()
 	jsonOut, _ := cmd.Flags().GetBool("json")
 
-	items, err := mgr.ListWorktrees()
+	repoDone := startProfileStage("list_require_repo")
+	repoRoot, err := mgr.RequireRepo()
+	repoDone()
+	if err != nil {
+		if errors.Is(err, ErrNotGitRepo) {
+			fmt.Fprintln(os.Stderr, "error: run this command inside a git worktree")
+			os.Exit(1)
+		}
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+	loadDone := startProfileStage("list_load_worktrees")
+	items, err := listWorktreesFast(mgr, repoRoot)
+	loadDone()
 	if err != nil {
 		if errors.Is(err, ErrNotGitRepo) {
 			fmt.Fprintln(os.Stderr, "error: run this command inside a git worktree")
@@ -349,6 +493,146 @@ func runDetach(cmd *cobra.Command, args []string) {
 	}
 }
 
+func runPreview(cmd *cobra.Command, args []string) {
+	// No target: show status. With a target: promote it.
+	if len(args) == 0 {
+		printPreviewStatus(getManager(), false)
+		return
+	}
+	mgr := getManager()
+	attach, _ := cmd.Flags().GetBool("attach")
+	st, err := mgr.PromotePreview(PreviewOptions{Target: args[0], Attach: attach})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, ErrorMsg(err.Error()))
+		os.Exit(1)
+	}
+	fmt.Println(SuccessMsg(fmt.Sprintf("Preview now running from %s (%s)", StyleBranch.Render(st.Branch), StylePath.Render(st.Path))))
+	printPreviewServiceURLs(mgr)
+	printPreviewSyncWarnings(st.SyncWarnings)
+}
+
+func runPreviewSync(cmd *cobra.Command, args []string) {
+	mgr := getManager()
+	st, err := mgr.SyncPreview("")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, ErrorMsg(err.Error()))
+		os.Exit(1)
+	}
+	fmt.Println(SuccessMsg(fmt.Sprintf("Preview configs synced for %s (%s)", StyleBranch.Render(st.Branch), StylePath.Render(st.Path))))
+	printPreviewSyncWarnings(st.SyncWarnings)
+}
+
+// printPreviewSyncWarnings surfaces non-fatal preview-sync messages.
+func printPreviewSyncWarnings(warnings []string) {
+	for _, w := range warnings {
+		fmt.Println(WarnMsg(w))
+	}
+}
+
+func runPreviewStatus(cmd *cobra.Command, args []string) {
+	jsonOut, _ := cmd.Flags().GetBool("json")
+	printPreviewStatus(getManager(), jsonOut)
+}
+
+func runPreviewStop(cmd *cobra.Command, args []string) {
+	mgr := getManager()
+	stopped, err := mgr.StopPreview("")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, ErrorMsg(err.Error()))
+		os.Exit(1)
+	}
+	if stopped {
+		fmt.Println(SuccessMsg("Preview stopped"))
+	} else {
+		fmt.Println(InfoMsg("Preview was not running"))
+	}
+}
+
+func runPreviewRestart(cmd *cobra.Command, args []string) {
+	mgr := getManager()
+	attach, _ := cmd.Flags().GetBool("attach")
+	st, err := mgr.RestartPreview(PreviewOptions{Attach: attach})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, ErrorMsg(err.Error()))
+		os.Exit(1)
+	}
+	fmt.Println(SuccessMsg(fmt.Sprintf("Preview restarted from %s (%s)", StyleBranch.Render(st.Branch), StylePath.Render(st.Path))))
+	printPreviewServiceURLs(mgr)
+	printPreviewSyncWarnings(st.SyncWarnings)
+}
+
+func runPreviewLogs(cmd *cobra.Command, args []string) {
+	mgr := getManager()
+	lines, _ := cmd.Flags().GetInt("lines")
+	out, err := mgr.PreviewServiceOutput("", args[0], lines)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, ErrorMsg(err.Error()))
+		os.Exit(1)
+	}
+	fmt.Print(out)
+	if !strings.HasSuffix(out, "\n") {
+		fmt.Println()
+	}
+}
+
+func printPreviewStatus(mgr *Manager, jsonOut bool) {
+	repoRoot, err := mgr.RequireRepo()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, ErrorMsg(err.Error()))
+		os.Exit(1)
+	}
+	st, services, err := mgr.PreviewStatus(repoRoot)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, ErrorMsg(err.Error()))
+		os.Exit(1)
+	}
+
+	if jsonOut {
+		payload := struct {
+			Preview  *PreviewState    `json:"preview"`
+			Services []PreviewService `json:"services"`
+		}{Preview: st, Services: services}
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		if err := enc.Encode(payload); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	if st == nil {
+		fmt.Println(InfoMsg("No preview worktree set. Run 'sprout preview <target>' to start one."))
+	} else {
+		fmt.Println(SuccessMsg(fmt.Sprintf("Preview: %s (%s)", StyleBranch.Render(st.Branch), StylePath.Render(st.Path))))
+	}
+	if len(services) == 0 {
+		fmt.Println(StyleDim.Render("No preview services configured. Add [[preview_windows]] to .sprout.toml."))
+		return
+	}
+	for _, svc := range services {
+		state := StyleDim.Render("stopped")
+		if svc.Running {
+			state = StyleClean.Render("running")
+		}
+		line := fmt.Sprintf("  %s  %s", state, svc.Name)
+		if svc.URL != "" {
+			line += "  " + StylePath.Render(svc.URL)
+		}
+		fmt.Println(line)
+	}
+}
+
+// printPreviewServiceURLs lists the configured service URLs. These come straight
+// from config, so it avoids re-scanning tmux state right after a promote.
+func printPreviewServiceURLs(mgr *Manager) {
+	for i, win := range mgr.Cfg.PreviewWindows {
+		if url := strings.TrimSpace(win.URL); url != "" {
+			fmt.Println(StyleDim.Render(fmt.Sprintf("  %s → %s", trimWindowConfigName(win, i), url)))
+		}
+	}
+}
+
 func runAgent(cmd *cobra.Command, args []string) {
 	mgr := getManager()
 	action := args[0]
@@ -424,4 +708,63 @@ func runDoctor(cmd *cobra.Command, args []string) {
 		}
 	}
 	os.Exit(report.ExitCode)
+}
+
+func runDaemonStart(cmd *cobra.Command, args []string) {
+	cfg, err := LoadConfig()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, ErrorMsg(err.Error()))
+		os.Exit(1)
+	}
+	if err := daemonStartBackground(cfg); err != nil {
+		fmt.Fprintln(os.Stderr, ErrorMsg(err.Error()))
+		os.Exit(1)
+	}
+	fmt.Println(SuccessMsg("daemon running"))
+}
+
+func runDaemonStop(cmd *cobra.Command, args []string) {
+	cfg, err := LoadConfig()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, ErrorMsg(err.Error()))
+		os.Exit(1)
+	}
+	if err := daemonStopBackground(cfg); err != nil {
+		fmt.Fprintln(os.Stderr, ErrorMsg(err.Error()))
+		os.Exit(1)
+	}
+	fmt.Println(SuccessMsg("daemon stopped"))
+}
+
+func runDaemonStatus(cmd *cobra.Command, args []string) {
+	cfg, err := LoadConfig()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, ErrorMsg(err.Error()))
+		os.Exit(1)
+	}
+	state, err := daemonStateString(cfg)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, ErrorMsg(err.Error()))
+		os.Exit(1)
+	}
+	switch state {
+	case "running":
+		fmt.Println(SuccessMsg("daemon running"))
+	case "starting":
+		fmt.Println(WarnMsg("daemon starting"))
+	default:
+		fmt.Println(InfoMsg("daemon stopped"))
+	}
+}
+
+func runDaemonRun(cmd *cobra.Command, args []string) {
+	cfg, err := LoadConfig()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, ErrorMsg(err.Error()))
+		os.Exit(1)
+	}
+	if err := daemonRunForeground(cfg); err != nil {
+		fmt.Fprintln(os.Stderr, ErrorMsg(err.Error()))
+		os.Exit(1)
+	}
 }

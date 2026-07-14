@@ -39,3 +39,17 @@ func debugLogf(format string, args ...any) {
 	_, _ = f.WriteString(line)
 	_ = f.Close()
 }
+
+func profileEnabled() bool {
+	return strings.TrimSpace(os.Getenv("SPROUT_PROFILE")) == "1"
+}
+
+func startProfileStage(stage string) func() {
+	if !profileEnabled() {
+		return func() {}
+	}
+	start := time.Now()
+	return func() {
+		debugLogf("profile stage=%s dur_ms=%d", strings.TrimSpace(stage), time.Since(start).Milliseconds())
+	}
+}

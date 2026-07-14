@@ -77,8 +77,33 @@ func TestTmuxWorktreeSessionName(t *testing.T) {
 	if !strings.HasPrefix(got, "sprout-dotnet-") {
 		t.Fatalf("expected repo-prefixed worktree session, got %q", got)
 	}
-	if !strings.Contains(got, "feat-my-feature") {
-		t.Fatalf("expected branch token in session, got %q", got)
+	if !strings.Contains(got, "my-feature") {
+		t.Fatalf("expected worktree path token in session, got %q", got)
+	}
+}
+
+func TestTmuxWorktreeSessionNameStableAcrossBranchSwitch(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.SessionPrefix = "sprout"
+	m := NewManager(cfg)
+
+	path := "/tmp/work/dotnet/.worktrees/feat/my-feature"
+	before := m.tmuxWorktreeSessionNameFrom("/tmp/work/dotnet", "feat/my feature", path)
+	after := m.tmuxWorktreeSessionNameFrom("/tmp/work/dotnet", "main", path)
+	if before != after {
+		t.Fatalf("expected session name to be stable for worktree path, got before=%q after=%q", before, after)
+	}
+}
+
+func TestConfiguredAgentWindowName(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Windows = []WindowConfig{
+		{Name: "editor"},
+		{Name: "assistant", Role: "agent"},
+	}
+	m := NewManager(cfg)
+	if got := m.configuredAgentWindowName(); got != "assistant" {
+		t.Fatalf("expected configured agent window name, got %q", got)
 	}
 }
 
@@ -171,29 +196,46 @@ func TestCommandShouldRemainOnExit(t *testing.T) {
 	}
 }
 
-func TestCopyUntrackedExcludeMatch(t *testing.T) {
-	cfg := DefaultConfig()
-	cfg.CopyUntrackedExclude = []string{"build", "dist/**", "*.log", "tmp/"}
-	m := NewManager(cfg)
+func TestTmuxCommandWithShellFallback(t *testing.T) {
+	origShell := os.Getenv("SHELL")
+	t.Cleanup(func() {
+		_ = os.Setenv("SHELL", origShell)
+	})
+	_ = os.Setenv("SHELL", "/bin/zsh")
 
-	tests := []struct {
-		rel  string
-		want bool
-	}{
-		{rel: "build", want: true},
-		{rel: "build/output/app.dll", want: true},
-		{rel: "dist/assets/app.js", want: true},
-		{rel: "tmp/cache", want: true},
-		{rel: "logs/app.log", want: true},
-		{rel: "notes/logs.txt", want: false},
-		{rel: "src/build/output", want: false},
-		{rel: "builds/app", want: false},
+	shellCmd := tmuxCommandWithShellFallback("zsh")
+	if shellCmd != "zsh" {
+		t.Fatalf("expected shell command passthrough, got %q", shellCmd)
 	}
 
-	for _, tc := range tests {
-		if got := m.shouldExcludeCopyPath(tc.rel); got != tc.want {
-			t.Fatalf("shouldExcludeCopyPath(%q) = %t, want %t", tc.rel, got, tc.want)
-		}
+	// Tool commands run under the user's login+interactive shell so their
+	// profile (PATH, tool-manager shims) is sourced.
+	toolCmd := tmuxCommandWithShellFallback("lazygit -p .")
+	if !strings.Contains(toolCmd, "/bin/zsh -l -i -c") {
+		t.Fatalf("expected login+interactive zsh wrapper, got %q", toolCmd)
+	}
+	if !strings.Contains(toolCmd, "lazygit -p .; exec /bin/zsh -i") {
+		t.Fatalf("expected command line fallback to shell, got %q", toolCmd)
+	}
+
+	// An unrecognised shell falls back to the portable sh -lc wrapper.
+	_ = os.Setenv("SHELL", "/usr/bin/fish")
+	fishCmd := tmuxCommandWithShellFallback("lazygit -p .")
+	if !strings.Contains(fishCmd, "sh -lc") {
+		t.Fatalf("expected sh -lc fallback for unknown shell, got %q", fishCmd)
+	}
+}
+
+func TestMatchesAgentCommandWrappedShell(t *testing.T) {
+	candidates := map[string]struct{}{
+		"codex": {},
+	}
+	pane := tmuxPaneInfo{
+		CurrentCommand: "zsh",
+		StartCommand:   "sh -lc 'codex --full-auto; exec /bin/zsh -i'",
+	}
+	if !matchesAgentCommand(pane, candidates) {
+		t.Fatalf("expected wrapped shell start command to match agent candidate")
 	}
 }
 
@@ -258,30 +300,6 @@ func TestGitWorktreeCommandTimeout(t *testing.T) {
 	_ = os.Setenv("SPROUT_GIT_WORKTREE_TIMEOUT_SECONDS", "10000")
 	if got := gitWorktreeCommandTimeout(); got != 600*time.Second {
 		t.Fatalf("expected max-clamped timeout, got %s", got)
-	}
-}
-
-func TestEstimateCopyPath(t *testing.T) {
-	root := t.TempDir()
-	if err := os.WriteFile(root+"/a.txt", []byte("hello"), 0o644); err != nil {
-		t.Fatalf("write file failed: %v", err)
-	}
-	if err := os.MkdirAll(root+"/nested", 0o755); err != nil {
-		t.Fatalf("mkdir failed: %v", err)
-	}
-	if err := os.WriteFile(root+"/nested/b.txt", []byte("world!"), 0o644); err != nil {
-		t.Fatalf("write nested file failed: %v", err)
-	}
-
-	files, bytes, err := estimateCopyPath(root)
-	if err != nil {
-		t.Fatalf("estimateCopyPath failed: %v", err)
-	}
-	if files != 2 {
-		t.Fatalf("expected 2 files, got %d", files)
-	}
-	if bytes < 11 {
-		t.Fatalf("expected at least 11 bytes, got %d", bytes)
 	}
 }
 
@@ -370,6 +388,30 @@ func TestParsePorcelainStatus(t *testing.T) {
 				t.Fatalf("parsePorcelainStatus(%q) = (%q,%q), want (%q,%q)", tc.input, stage, work, tc.stage, tc.work)
 			}
 		})
+	}
+}
+
+func TestParsePorcelainV2DiffFiles(t *testing.T) {
+	raw := []byte("1 MM N... 100644 100644 100644 abc def file1.txt\x00" +
+		"2 R. N... 100644 100644 100644 abc def R100 renamed.txt\x00old.txt\x00" +
+		"? untracked.txt\x00" +
+		"u UU N... 100644 100644 100644 100644 abc def ghi conflicted.txt\x00")
+
+	files := parsePorcelainV2DiffFiles(raw)
+	if len(files) != 4 {
+		t.Fatalf("expected 4 files, got %d: %+v", len(files), files)
+	}
+	if files[0].Path != "file1.txt" || files[0].Status != "MM" {
+		t.Fatalf("unexpected tracked file parse: %+v", files[0])
+	}
+	if files[1].Path != "renamed.txt" || files[1].PreviousPath != "old.txt" || files[1].Status != "R." {
+		t.Fatalf("unexpected rename parse: %+v", files[1])
+	}
+	if files[2].Path != "untracked.txt" || files[2].Status != "??" {
+		t.Fatalf("unexpected untracked parse: %+v", files[2])
+	}
+	if files[3].Path != "conflicted.txt" || files[3].Status != "UU" {
+		t.Fatalf("unexpected unmerged parse: %+v", files[3])
 	}
 }
 
@@ -527,5 +569,135 @@ func BenchmarkRefreshRepoChoicesForce(b *testing.B) {
 		if len(u.repos) == 0 {
 			b.Fatal("expected repos")
 		}
+	}
+}
+
+func trashCount(t testing.TB, dir string) int {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return 0
+	}
+	n := 0
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), sproutTrashPrefix) {
+			n++
+		}
+	}
+	return n
+}
+
+// TestRemoveAsync verifies that an async removal detaches the worktree instantly
+// (dir gone, git entry pruned) and that its files are reaped in the background.
+func TestRemoveAsync(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is required")
+	}
+	root := t.TempDir()
+	if resolved, err := filepath.EvalSymlinks(root); err == nil {
+		root = resolved // git records the resolved path (macOS /var -> /private/var)
+	}
+	repo := filepath.Join(root, "repo")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatalf("mkdir repo: %v", err)
+	}
+	runGitBench(t, repo, "init")
+	runGitBench(t, repo, "config", "user.email", "t@example.com")
+	runGitBench(t, repo, "config", "user.name", "T")
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("hi\n"), 0o644); err != nil {
+		t.Fatalf("write readme: %v", err)
+	}
+	runGitBench(t, repo, "add", "README.md")
+	runGitBench(t, repo, "commit", "-m", "init")
+	base := strings.TrimSpace(runGitBench(t, repo, "branch", "--show-current"))
+	if base == "" {
+		base = "main"
+	}
+
+	wts := filepath.Join(root, "wts")
+	if err := os.MkdirAll(wts, 0o755); err != nil {
+		t.Fatalf("mkdir wts: %v", err)
+	}
+	wtPath := filepath.Join(wts, "feat-x")
+	runGitBench(t, repo, "worktree", "add", "-b", "feat/x", wtPath, base)
+	if err := os.WriteFile(filepath.Join(wtPath, "big.txt"), []byte("data\n"), 0o644); err != nil {
+		t.Fatalf("write worktree file: %v", err)
+	}
+
+	wd, _ := os.Getwd()
+	t.Cleanup(func() { _ = os.Chdir(wd) })
+	if err := os.Chdir(repo); err != nil {
+		t.Fatalf("chdir repo: %v", err)
+	}
+
+	cfg := DefaultConfig()
+	cfg.WorktreeRootTemplate = wts
+	m := NewManager(cfg)
+
+	path, _, err := m.Remove(RemoveOptions{Target: wtPath, Force: true, Async: true})
+	if err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	if path != wtPath {
+		t.Errorf("returned path = %q, want %q", path, wtPath)
+	}
+
+	// The worktree directory is gone immediately (renamed aside).
+	if _, err := os.Stat(wtPath); !os.IsNotExist(err) {
+		t.Errorf("worktree still present after async remove: err=%v", err)
+	}
+	// git no longer lists it (pruned).
+	if list := runGitBench(t, repo, "worktree", "list", "--porcelain"); strings.Contains(list, wtPath) {
+		t.Errorf("worktree not pruned from git:\n%s", list)
+	}
+
+	// The background reaper eventually clears the trash under the worktree root.
+	deadline := time.Now().Add(5 * time.Second)
+	for trashCount(t, wts) > 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("trash not reaped within timeout")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// TestSweepDeletedTrash verifies leftover trash is reaped while real worktree
+// directories are left untouched.
+func TestSweepDeletedTrash(t *testing.T) {
+	root := t.TempDir()
+	repo := filepath.Join(root, "repo")
+	wts := filepath.Join(root, "wts")
+	for _, d := range []string{repo, wts} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", d, err)
+		}
+	}
+
+	trash := filepath.Join(wts, sproutTrashPrefix+"feat-old.123")
+	if err := os.MkdirAll(trash, 0o755); err != nil {
+		t.Fatalf("mkdir trash: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(trash, "junk.txt"), []byte("x\n"), 0o644); err != nil {
+		t.Fatalf("write junk: %v", err)
+	}
+	keep := filepath.Join(wts, "feat-live")
+	if err := os.MkdirAll(keep, 0o755); err != nil {
+		t.Fatalf("mkdir keep: %v", err)
+	}
+
+	cfg := DefaultConfig()
+	cfg.WorktreeRootTemplate = wts
+	m := NewManager(cfg)
+	m.SweepDeletedTrash(repo)
+
+	deadline := time.Now().Add(5 * time.Second)
+	for trashCount(t, wts) > 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("trash not swept within timeout")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if _, err := os.Stat(keep); err != nil {
+		t.Errorf("live worktree dir was removed by sweep: %v", err)
 	}
 }
