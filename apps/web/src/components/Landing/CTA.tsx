@@ -2,7 +2,6 @@ import React from "react";
 import Link from "@docusaurus/Link";
 import clsx from "clsx";
 import { ArrowRight, GitBranch } from "lucide-react";
-import { DitheredBackdrop } from "./DitheredBackdrop";
 import styles from "../../pages/index.module.css";
 
 export function CTASection() {
@@ -10,7 +9,6 @@ export function CTASection() {
     <section className={styles.ctaSection}>
       <div className="container">
         <div className={`${styles.ctaShell} ${styles.voxelSurface}`} data-anim>
-          <DitheredBackdrop className={styles.ditherEdge} variant="cta" />
           <div className={styles.voxelInner}>
             <div className={styles.ctaDivider}>
               <div className={styles.ctaDiamond} />

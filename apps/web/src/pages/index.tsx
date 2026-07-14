@@ -3,6 +3,7 @@ import Layout from "@theme/Layout";
 import { HomepageHeader } from "../components/Landing/Header";
 import { FeaturesSection } from "../components/Landing/Features";
 import { DemoSection } from "../components/Landing/Demo";
+import { PreviewSection } from "../components/Landing/Preview";
 import { TUISection } from "../components/Landing/TUI";
 import { TmuxSection } from "../components/Landing/Tmux";
 import { CTASection } from "../components/Landing/CTA";
@@ -17,13 +18,14 @@ export default function Home(): ReactNode {
       description="Sprout manages your git worktrees with isolated tmux sessions and AI agents, so you can work across multiple branches without losing your place."
     >
       <div className={styles.pageBackdrop} aria-hidden="true">
-        <DitheredBackdrop className={styles.pageDither} variant="hero" />
+        <DitheredBackdrop className={styles.pageDither} variant="hero" mousePunch />
       </div>
       <LandingAnimations />
       <HomepageHeader />
       <main>
         <FeaturesSection />
         <DemoSection />
+        <PreviewSection />
         <TUISection />
         <TmuxSection />
         <CTASection />

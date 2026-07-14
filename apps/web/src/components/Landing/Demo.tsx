@@ -1,6 +1,5 @@
 import React, { ReactNode } from "react";
 import { GitBranch, Terminal, Zap } from "lucide-react";
-import { DitheredBackdrop } from "./DitheredBackdrop";
 import styles from "../../pages/index.module.css";
 
 type DemoCardProps = {
@@ -12,7 +11,6 @@ type DemoCardProps = {
 function DemoCard({ icon: Icon, title, children }: DemoCardProps) {
   return (
     <div className={`${styles.demoCard} ${styles.voxelSurface}`}>
-      <DitheredBackdrop className={styles.ditherEdge} variant="section" />
       <div className={styles.voxelInner}>
         <div className={styles.terminalChrome}>
           <div className={styles.terminalDots}>
@@ -46,7 +44,6 @@ export function DemoSection() {
       <div className="container">
         <div className={styles.demoHeader} data-anim>
           <div className={styles.demoHeaderLeft}>
-            <span className={styles.sectionLabel}>In practice</span>
             <h2 className={styles.sectionTitle}>A few commands.</h2>
           </div>
           <p className={styles.demoHeaderRight}>
@@ -67,7 +64,7 @@ export function DemoSection() {
               <div className={styles.terminalSuccess}>
                 ✓ tmux session launched
               </div>
-              <div className={styles.terminalSuccess}>✓ agent ready</div>
+              <div className={styles.terminalSuccess}>✓ tools started</div>
             </div>
           </DemoCard>
 

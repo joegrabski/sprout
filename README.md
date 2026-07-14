@@ -1,8 +1,8 @@
-# Sprout
-
 <div align="center">
 
-**Git worktree operations, without the context switching**
+<img src="apps/web/static/img/banner.png" alt="Sprout — git worktrees, without the context switching" width="840" />
+
+<br/>
 
 A modern TUI for managing git worktrees with integrated tmux sessions and AI coding agents.
 

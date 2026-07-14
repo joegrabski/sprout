@@ -1,0 +1,58 @@
+.field {
+  isolation: isolate;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.canvas {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+/* Faint CRT scanlines over the glyphs, kept soft. */
+.field::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: repeating-linear-gradient(
+    0deg,
+    rgba(13, 175, 98, 0.04) 0,
+    rgba(13, 175, 98, 0.04) 1px,
+    transparent 1px,
+    transparent 3px
+  );
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .field {
+    animation: fieldFlicker 7s steps(1, end) infinite;
+  }
+}
+
+@keyframes fieldFlicker {
+  0%,
+  40%,
+  100% {
+    opacity: 1;
+  }
+  41% {
+    opacity: 0.94;
+  }
+  42% {
+    opacity: 1;
+  }
+  76% {
+    opacity: 1;
+  }
+  77% {
+    opacity: 0.96;
+  }
+  78% {
+    opacity: 1;
+  }
+}

@@ -16,7 +16,7 @@ const FeatureList: FeatureItem[] = [
     description: (
       <>
         Beautiful terminal interface for managing all your worktrees. See
-        status, active sessions, and running agents at a glance.
+        status, active sessions, and git diffs at a glance.
       </>
     ),
   },

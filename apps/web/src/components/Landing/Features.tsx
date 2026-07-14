@@ -1,5 +1,4 @@
 import React from "react";
-import { DitheredBackdrop } from "./DitheredBackdrop";
 import styles from "../../pages/index.module.css";
 
 const FEATURES = [
@@ -7,13 +6,13 @@ const FEATURES = [
     n: "01",
     title: "See everything at once",
     description:
-      "A TUI showing all your worktrees with live status, active sessions, git state, and running agents, without leaving the terminal.",
+      "A TUI showing all your worktrees with live status, active sessions, and git diffs, without leaving the terminal.",
   },
   {
     n: "02",
     title: "Tailored multi-pane sessions",
     description:
-      "Every worktree gets its own tmux session. Configure project-specific multi-pane layouts, auto-running dev servers, and consistent toolsets in one TOML rule.",
+      "Per-project multi-pane layouts, auto-running dev servers, and a consistent toolset, scaffolded from one TOML rule.",
   },
   {
     n: "03",
@@ -37,7 +36,19 @@ const FEATURES = [
     n: "06",
     title: "Feels native to your shell",
     description:
-      "Shell hooks for zsh, bash, and fish let you navigate worktrees exactly like any other directory.",
+      "Shell hooks for zsh, bash, and fish let you navigate worktrees exactly like any other directory. Preview panes load your full shell profile, so your tools are always on PATH.",
+  },
+  {
+    n: "07",
+    title: "Preview any branch, live",
+    description:
+      "Promote any worktree to a live preview: your whole stack (APIs, web apps, mobile bundler) runs from that branch in a dedicated session. Switch which branch is live with one command.",
+  },
+  {
+    n: "08",
+    title: "Configs that follow your tunnels",
+    description:
+      "Expose a service through a tunnel and Sprout rewrites the URLs into your app config on every switch. No stale tunnel URLs, no hand-editing, no rebuilds.",
   },
 ];
 
@@ -47,7 +58,6 @@ export function FeaturesSection() {
       <div className="container">
         <div className={styles.featuresLayout}>
           <div className={styles.featuresIntro}>
-            <span className={styles.sectionLabel}>Features</span>
             <h2 className={styles.sectionTitle}>
               Everything your workflow needs
             </h2>
@@ -56,7 +66,6 @@ export function FeaturesSection() {
             </p>
           </div>
           <div className={`${styles.featuresGrid} ${styles.voxelSurface}`} data-anim>
-            <DitheredBackdrop className={styles.ditherEdge} variant="section" />
             <div className={styles.voxelInner}>
             {FEATURES.map((f) => (
               <div key={f.n} className={styles.featureItem}>

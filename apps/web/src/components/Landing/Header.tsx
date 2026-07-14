@@ -462,11 +462,6 @@ export function HomepageHeader() {
 
       <div className="container">
         <div className={styles.heroContent} data-anim>
-          <div className={styles.badge}>
-            <Sprout size={13} />
-            <span>Open Source • Built for the Terminal</span>
-          </div>
-
           <Heading as="h1" className={styles.heroTitle}>
             <span className={styles.titleLine}>Split your work.</span>
             <span className={styles.titleLine}>
@@ -475,9 +470,8 @@ export function HomepageHeader() {
           </Heading>
 
           <p className={styles.heroSubtitle}>
-            Sprout manages your git worktrees with isolated tmux sessions and
-            dedicated AI agents, so you can work across multiple branches
-            without ever losing your place.
+            Every branch gets its own worktree, tmux session, and AI agent, so
+            you can work in parallel without ever losing your place.
           </p>
 
           <InstallCommand />

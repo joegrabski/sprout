@@ -7,17 +7,23 @@
  * Footer / overscroll: #081a0e
  */
 
-/* ── Overscroll colour matches footer ──────────── */
+/* ── No rubber-band overscroll ─────────────────── */
 html {
-  background: #0d0f0e;
+  background: #0b0f0d;
   scroll-behavior: smooth;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   overflow-x: hidden;
+  overscroll-behavior: none;
+}
+
+html[data-theme="light"] {
+  background: #f2fbf4;
 }
 
 body {
   overflow-x: hidden;
+  overscroll-behavior: none;
 }
 
 #__docusaurus,
@@ -143,7 +149,7 @@ h6 {
 }
 
 body {
-  background: var(--ifm-background-color);
+  background: transparent;
 }
 
 /* ── Inline code (excludes code blocks) ─────────── */

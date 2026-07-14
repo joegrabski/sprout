@@ -1,7 +1,10 @@
 package sprout
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -38,8 +41,10 @@ type tuiState struct {
 	statusPane  *tview.TextView
 	detailPane  *tview.Flex
 	detailPages *tview.Pages
+	agentPages  *tview.Pages
 	detailTabs  *tview.TextView
 	detail      *tview.TextView
+	agentTerm   *terminalSurface
 	diffFiles   *counterTable
 	diffView    *tview.TextView
 	footerLeft  *tview.TextView
@@ -51,6 +56,8 @@ type tuiState struct {
 	filter   string
 	repos    []repoChoice
 
+	previewWorktreePath string // path of the worktree currently designated as the preview
+
 	focusables          []tview.Primitive
 	lastDetail          string
 	lastDiff            string
@@ -58,25 +65,62 @@ type tuiState struct {
 	diffItems           []DiffFile
 	diffSel             int
 	diffPath            string
+	diffTree            bool
+	diffTreeRows        []diffTreeRow
+	diffTreeRowSel      int
+	diffTreeCollapsed   map[string]bool
 	diffCache           map[string]diffFilesCacheEntry
 	patchCache          map[string]diffPatchCacheEntry
 	agentPrompt         map[string]agentPromptState
-	agentOutputCache    map[string]string
-	agentOutputActivity map[string]int64
+	agentPaneTargets    map[string]string
+	agentStreamLogs     map[string]string
+	agentDetailTextMode bool
+	agentTerminalView   agentTerminalViewState
 	paneSizes           map[string]paneSize
 	paneActivity        map[string]int64
 	panePromptActivity  map[string]int64
+	pendingPaneActivity map[string]int64
 	forceTableSelect    bool
 	footerLevel         string
 	footerMsg           string
 	lastRepoScan        time.Time
 	lastRepoScanParent  string
 	repoChoiceCache     map[string]repoChoice
+	previewMu           sync.Mutex
+	previewCancel       context.CancelFunc
+	previewSeq          int64
+	cacheUse            uint64
 }
 
 type paneSize struct {
 	w int
 	h int
+}
+
+type agentTerminalViewState struct {
+	paneTarget   string
+	streamOffset int64
+	size         paneSize
+	needsReset   bool
+}
+
+type fileChunkResult struct {
+	data       []byte
+	nextOffset int64
+	reset      bool
+}
+
+type agentTerminalSyncDeps struct {
+	ensureLog func(reset bool) (string, error)
+	readChunk func(path string, offset int64) (fileChunkResult, error)
+	capture   func(lines int) (string, error)
+}
+
+type agentTerminalSyncResult struct {
+	data      []byte
+	reset     bool
+	nextState agentTerminalViewState
+	ready     agentPromptState
 }
 
 type detailTab int
@@ -92,26 +136,45 @@ const (
 	agentPromptUnknown agentPromptState = iota
 	agentPromptBusy
 	agentPromptReady
+	agentPromptNeedsInput
 )
 
 var agentPromptOnlyRe = regexp.MustCompile(`^(>|>>|>>>|\$|#|:|›|❯|➜)\s*$`)
 var agentPromptInputRe = regexp.MustCompile(`^(>|>>|>>>|\$|#|:|›|❯|➜)\s+.*$`)
 
+var (
+	tmuxCapturePaneFn  = tmuxCapturePane
+	tmuxPaneActivityFn = tmuxPaneActivity
+	tmuxResizePaneFn   = tmuxResizePane
+	ensurePaneStreamFn = func(m *Manager, repoRoot, paneTarget string, seedLines int, reset bool) (string, error) {
+		return m.ensurePaneStream(repoRoot, paneTarget, seedLines, reset)
+	}
+	readFileChunkFn = readFileChunk
+)
+
 type diffFilesCacheEntry struct {
-	files     []DiffFile
-	fetchedAt time.Time
+	digest   string
+	files    []DiffFile
+	lastUsed uint64
 }
 
 type diffPatchCacheEntry struct {
-	text      string
-	fetchedAt time.Time
+	text     string
+	lastUsed uint64
+}
+
+type diffTreeRow struct {
+	label     string
+	status    string
+	fileIndex int
+	isDir     bool
+	depth     int
+	key       string
 }
 
 const (
 	detailPollInterval = 150 * time.Millisecond
 	detailCaptureLines = 60
-	diffFilesCacheTTL  = 900 * time.Millisecond
-	diffPatchCacheTTL  = 2 * time.Second
 )
 
 type counterTable struct {
@@ -208,17 +271,31 @@ func applyTheme() {
 }
 
 func RunUI(mgr *Manager) int {
+	repoStage := startProfileStage("ui_require_repo")
 	repoRoot, err := mgr.RequireRepo()
+	repoStage()
 	if err != nil {
 		fmt.Println("error: run this command inside a git worktree")
 		return 1
 	}
 
+	daemonStage := startProfileStage("ui_daemon_ensure")
+	daemonEnsureForUI(mgr.Cfg)
+	daemonStage()
+
+	// Reap any leftover trash from a prior async removal that didn't finish.
+	go mgr.SweepDeletedTrash(repoRoot)
+
 	u := newTUI(mgr, repoRoot)
+	firstPaint := startProfileStage("ui_first_paint")
 	if err := u.refresh(); err != nil {
 		u.setError("refresh failed: %v", err)
 	}
-	u.startUpdateCheck()
+	firstPaint()
+	go func() {
+		time.Sleep(250 * time.Millisecond)
+		u.startUpdateCheck()
+	}()
 	stopLive := u.startLiveDetailUpdates(detailPollInterval)
 	defer stopLive()
 
@@ -273,6 +350,10 @@ func newTUI(mgr *Manager, repoRoot string) *tuiState {
 		SetBackgroundColor(tcell.ColorDefault).
 		SetBorder(false)
 
+	agentTerm := newTerminalSurface()
+	agentTerm.SetBorder(false)
+	agentTerm.SetBackgroundColor(tcell.ColorDefault)
+
 	diffFiles := newCounterTable()
 	diffFiles.SetSelectable(false, false)
 	diffFiles.SetFixed(1, 0)
@@ -300,8 +381,12 @@ func newTUI(mgr *Manager, repoRoot string) *tuiState {
 		AddItem(diffFiles, 0, 2, false).
 		AddItem(diffView, 0, 5, false)
 
+	agentPages := tview.NewPages().
+		AddPage("terminal", agentTerm, true, true).
+		AddPage("text", detail, true, false)
+
 	detailPages := tview.NewPages().
-		AddPage("agent", detail, true, true).
+		AddPage("agent", agentPages, true, true).
 		AddPage("diff", diffBody, true, false)
 
 	detailPane := tview.NewFlex().
@@ -359,22 +444,29 @@ func newTUI(mgr *Manager, repoRoot string) *tuiState {
 		statusPane:          statusPane,
 		detailPane:          detailPane,
 		detailPages:         detailPages,
+		agentPages:          agentPages,
 		detailTabs:          detailTabs,
 		detail:              detail,
+		agentTerm:           agentTerm,
 		diffFiles:           diffFiles,
 		diffView:            diffView,
 		footerLeft:          footerLeft,
 		footerRight:         footerRight,
-		detailTab:           detailTabAgent,
+		detailTab:           detailTabDiff,
 		diffSel:             0,
+		diffTree:            true,
+		diffTreeCollapsed:   map[string]bool{},
 		diffCache:           map[string]diffFilesCacheEntry{},
 		patchCache:          map[string]diffPatchCacheEntry{},
 		agentPrompt:         map[string]agentPromptState{},
-		agentOutputCache:    map[string]string{},
-		agentOutputActivity: map[string]int64{},
+		agentPaneTargets:    map[string]string{},
+		agentStreamLogs:     map[string]string{},
+		agentDetailTextMode: false,
+		agentTerminalView:   agentTerminalViewState{needsReset: true},
 		paneSizes:           map[string]paneSize{},
 		paneActivity:        map[string]int64{},
 		panePromptActivity:  map[string]int64{},
+		pendingPaneActivity: map[string]int64{},
 		repoChoiceCache:     map[string]repoChoice{},
 	}
 	u.focusables = []tview.Primitive{u.statusPane, u.detailPane, u.table}
@@ -398,19 +490,83 @@ func newTUI(mgr *Manager, repoRoot string) *tuiState {
 		}
 	})
 	u.app.SetInputCapture(u.handleKey)
+	u.app.SetMouseCapture(u.handleMouse)
 
 	u.footerRight.SetText(fmt.Sprintf("v%s", Version))
 	u.refreshRepoChoices(true)
 	u.app.SetFocus(u.statusPane)
+	u.detailPages.ShowPage("diff")
+	u.detailPages.HidePage("agent")
 	u.updatePaneFocusStyles()
 	u.setInfo("ready")
+	u.renderDetails()
 	return u
+}
+
+func (u *tuiState) handleMouse(event *tcell.EventMouse, action tview.MouseAction) (*tcell.EventMouse, tview.MouseAction) {
+	if event == nil {
+		return event, action
+	}
+	switch action {
+	case tview.MouseLeftDown, tview.MouseLeftClick, tview.MouseScrollUp, tview.MouseScrollDown, tview.MouseScrollLeft, tview.MouseScrollRight:
+	default:
+		return event, action
+	}
+
+	x, y := event.Position()
+	target := u.mouseFocusTarget(x, y)
+	if target == nil {
+		return event, action
+	}
+	if u.app.GetFocus() != target {
+		u.app.SetFocus(target)
+		u.updatePaneFocusStyles()
+	}
+	return event, action
+}
+
+func (u *tuiState) mouseFocusTarget(x, y int) tview.Primitive {
+	switch {
+	case pointInPrimitive(u.statusPane, x, y):
+		return u.statusPane
+	case pointInPrimitive(u.table, x, y):
+		return u.table
+	case pointInPrimitive(u.diffFiles, x, y):
+		return u.diffFiles
+	case pointInPrimitive(u.diffView, x, y):
+		return u.diffView
+	case pointInPrimitive(u.agentTerm, x, y):
+		if u.agentDetailTextMode {
+			return u.detail
+		}
+		return u.agentTerm
+	case pointInPrimitive(u.detail, x, y):
+		return u.detail
+	case pointInPrimitive(u.detailPane, x, y):
+		if u.detailTab == detailTabDiff {
+			return u.diffFiles
+		}
+		if u.agentDetailTextMode {
+			return u.detail
+		}
+		return u.agentTerm
+	default:
+		return nil
+	}
+}
+
+func pointInPrimitive(p tview.Primitive, x, y int) bool {
+	if p == nil {
+		return false
+	}
+	px, py, w, h := p.GetRect()
+	return x >= px && y >= py && x < px+w && y < py+h
 }
 
 func (u *tuiState) handleKey(ev *tcell.EventKey) *tcell.EventKey {
 	mainFocus := u.isMainFocus()
 	focus := u.app.GetFocus()
-	inDetail := focus == u.detailPane || focus == u.detail || focus == u.diffFiles || focus == u.diffView
+	inDetail := focus == u.detailPane || focus == u.detail || focus == u.agentTerm || focus == u.diffFiles || focus == u.diffView
 
 	if mainFocus && inDetail {
 		return u.handleDetailBrowseKey(ev)
@@ -472,10 +628,13 @@ func (u *tuiState) handleKey(ev *tcell.EventKey) *tcell.EventKey {
 		case 'k':
 			u.moveSelection(-1)
 			return nil
-		case 'r':
+		case 'R':
 			if err := u.refresh(); err != nil {
 				u.setError("refresh failed: %v", err)
 			}
+			return nil
+		case 'p':
+			u.promoteSelectedPreview()
 			return nil
 		case 'n':
 			u.showCreateModal()
@@ -501,6 +660,7 @@ func (u *tuiState) handleDetailBrowseKey(ev *tcell.EventKey) *tcell.EventKey {
 	if u.detailTab == detailTabDiff {
 		return u.handleDiffBrowseKey(ev)
 	}
+	textMode := u.agentDetailTextMode && u.app.GetFocus() == u.detail
 
 	switch ev.Key() {
 	case tcell.KeyCtrlC:
@@ -513,24 +673,37 @@ func (u *tuiState) handleDetailBrowseKey(ev *tcell.EventKey) *tcell.EventKey {
 		u.cycleFocus(-1)
 		return nil
 	case tcell.KeyEnter:
+		u.goCurrent()
 		return nil
 	case tcell.KeyUp:
-		u.scrollTextView(u.detail, -1)
+		if textMode {
+			u.scrollTextView(u.detail, -1)
+		}
 		return nil
 	case tcell.KeyDown:
-		u.scrollTextView(u.detail, 1)
+		if textMode {
+			u.scrollTextView(u.detail, 1)
+		}
 		return nil
 	case tcell.KeyPgUp:
-		u.scrollTextView(u.detail, -10)
+		if textMode {
+			u.scrollTextView(u.detail, -10)
+		}
 		return nil
 	case tcell.KeyPgDn:
-		u.scrollTextView(u.detail, 10)
+		if textMode {
+			u.scrollTextView(u.detail, 10)
+		}
 		return nil
 	case tcell.KeyHome:
-		u.detail.ScrollToBeginning()
+		if textMode {
+			u.detail.ScrollToBeginning()
+		}
 		return nil
 	case tcell.KeyEnd:
-		u.detail.ScrollToEnd()
+		if textMode {
+			u.detail.ScrollToEnd()
+		}
 		return nil
 	case tcell.KeyLeft:
 		u.cycleDetailTab(-1)
@@ -541,13 +714,21 @@ func (u *tuiState) handleDetailBrowseKey(ev *tcell.EventKey) *tcell.EventKey {
 	case tcell.KeyRune:
 		switch ev.Rune() {
 		case 'j':
-			u.scrollTextView(u.detail, 1)
+			if textMode {
+				u.scrollTextView(u.detail, 1)
+			}
 		case 'k':
-			u.scrollTextView(u.detail, -1)
+			if textMode {
+				u.scrollTextView(u.detail, -1)
+			}
 		case 'g':
-			u.detail.ScrollToBeginning()
+			u.goCurrent()
 		case 'G':
-			u.detail.ScrollToEnd()
+			if textMode {
+				u.detail.ScrollToEnd()
+			}
+		case 'p':
+			u.promoteSelectedPreview()
 		case 'h', '[':
 			u.cycleDetailTab(-1)
 		case 'l', ']':
@@ -590,16 +771,13 @@ func (u *tuiState) handleDiffBrowseKey(ev *tcell.EventKey) *tcell.EventKey {
 		u.scrollTextView(u.diffView, 10)
 		return nil
 	case tcell.KeyHome:
-		u.selectDiffFile(0)
+		u.selectDiffRow(0)
 		return nil
 	case tcell.KeyEnd:
-		u.selectDiffFile(len(u.diffItems) - 1)
+		u.selectDiffRow(len(u.diffTreeRows) - 1)
 		return nil
-	case tcell.KeyLeft:
-		u.cycleDetailTab(-1)
-		return nil
-	case tcell.KeyRight:
-		u.cycleDetailTab(1)
+	case tcell.KeyEnter:
+		u.toggleDiffDirectory()
 		return nil
 	case tcell.KeyRune:
 		switch ev.Rune() {
@@ -612,13 +790,31 @@ func (u *tuiState) handleDiffBrowseKey(ev *tcell.EventKey) *tcell.EventKey {
 		case 'K':
 			u.scrollTextView(u.diffView, -10)
 		case 'g':
-			u.selectDiffFile(0)
+			u.selectDiffRow(0)
 		case 'G':
-			u.selectDiffFile(len(u.diffItems) - 1)
-		case 'h', '[':
-			u.cycleDetailTab(-1)
-		case 'l', ']':
-			u.cycleDetailTab(1)
+			u.selectDiffRow(len(u.diffTreeRows) - 1)
+		case '`':
+			u.diffTree = !u.diffTree
+			u.renderDiffFileList()
+			if len(u.diffTreeRows) > 0 && u.diffTreeRowSel >= 0 && u.diffTreeRowSel < len(u.diffTreeRows) {
+				row := u.diffTreeRows[u.diffTreeRowSel]
+				if row.fileIndex >= 0 {
+					u.diffSel = row.fileIndex
+					u.renderDetails()
+				} else {
+					u.renderDirectoryPreview(row)
+				}
+			}
+		case '-':
+			if u.diffTree {
+				u.collapseAllDiffDirectories(true)
+			}
+		case '=':
+			if u.diffTree {
+				u.collapseAllDiffDirectories(false)
+			}
+		case ' ':
+			u.toggleDiffDirectory()
 		}
 		return nil
 	}
@@ -633,7 +829,7 @@ func (u *tuiState) isMainFocus() bool {
 		}
 	}
 	// Also check sub-focusables in diff pane or agent pane
-	if current == u.diffFiles || current == u.diffView || current == u.detail {
+	if current == u.diffFiles || current == u.diffView || current == u.detail || current == u.agentTerm {
 		return true
 	}
 	return false
@@ -660,47 +856,13 @@ func (u *tuiState) cycleFocus(delta int) {
 }
 
 func (u *tuiState) cycleDetailTab(delta int) {
-	tabs := []detailTab{detailTabAgent, detailTabDiff}
-	idx := 0
-	for i, tab := range tabs {
-		if u.detailTab == tab {
-			idx = i
-			break
-		}
-	}
-	next := (idx + delta) % len(tabs)
-	if next < 0 {
-		next += len(tabs)
-	}
-	u.setDetailTab(tabs[next])
+	_ = delta
 }
 
 func (u *tuiState) setDetailTab(tab detailTab) {
-	if u.detailTab == tab {
+	if tab != detailTabDiff || u.detailTab == detailTabDiff {
 		return
 	}
-	u.detailTab = tab
-	if tab == detailTabAgent {
-		u.detailPages.ShowPage("agent")
-		u.detailPages.HidePage("diff")
-		u.lastDetail = ""
-		u.detail.ScrollToEnd()
-		if u.app.GetFocus() == u.diffFiles || u.app.GetFocus() == u.diffView {
-			u.app.SetFocus(u.detail)
-		}
-	} else {
-		u.detailPages.ShowPage("diff")
-		u.detailPages.HidePage("agent")
-		u.lastDiff = ""
-		u.diffView.ScrollToBeginning()
-		if u.app.GetFocus() == u.detail {
-			u.app.SetFocus(u.diffFiles)
-		}
-	}
-	u.renderDetailTabs()
-	u.renderDetails()
-	u.updatePaneFocusStyles()
-	u.redrawFooter()
 }
 
 func (u *tuiState) updatePaneFocusStyles() {
@@ -729,10 +891,10 @@ func (u *tuiState) updatePaneFocusStyles() {
 		func(s string) { u.table.SetTitle(s) },
 		func(c tcell.Color) { u.table.SetBorderColor(c) },
 		func(c tcell.Color) { u.table.SetTitleColor(c) },
-		"[3]-Worktrees",
+		u.tablePaneTitle(),
 	)
 	stylePane(
-		focus == u.detailPane || focus == u.detail || focus == u.diffFiles || focus == u.diffView,
+		focus == u.detailPane || focus == u.detail || focus == u.agentTerm || focus == u.diffFiles || focus == u.diffView,
 		func(s string) { u.detailPane.SetTitle(s) },
 		func(c tcell.Color) { u.detailPane.SetBorderColor(c) },
 		func(c tcell.Color) { u.detailPane.SetTitleColor(c) },
@@ -749,7 +911,6 @@ func (u *tuiState) updatePaneFocusStyles() {
 
 	u.renderStatusPane()
 	u.renderDetailTabs()
-	u.renderDetails()
 	u.redrawFooter()
 }
 
@@ -770,17 +931,17 @@ func (u *tuiState) moveSelection(delta int) {
 }
 
 func (u *tuiState) moveDiffSelection(delta int) {
-	if len(u.diffItems) == 0 {
+	if len(u.diffTreeRows) == 0 {
 		return
 	}
-	next := u.diffSel + delta
+	next := u.diffTreeRowSel + delta
 	if next < 0 {
 		next = 0
 	}
-	if next >= len(u.diffItems) {
-		next = len(u.diffItems) - 1
+	if next >= len(u.diffTreeRows) {
+		next = len(u.diffTreeRows) - 1
 	}
-	u.selectDiffFile(next)
+	u.selectDiffRow(next)
 }
 
 func (u *tuiState) selectDiffFile(idx int) {
@@ -798,7 +959,72 @@ func (u *tuiState) selectDiffFile(idx int) {
 	}
 	u.diffSel = idx
 	u.renderDiffFileList()
-	u.renderSelectedFileDiff()
+	u.renderDetails()
+}
+
+func (u *tuiState) selectDiffRow(idx int) {
+	if len(u.diffTreeRows) == 0 {
+		return
+	}
+	if idx < 0 {
+		idx = 0
+	}
+	if idx >= len(u.diffTreeRows) {
+		idx = len(u.diffTreeRows) - 1
+	}
+	if idx == u.diffTreeRowSel {
+		return
+	}
+	u.diffTreeRowSel = idx
+	row := u.diffTreeRows[idx]
+	u.renderDiffFileList()
+	if row.fileIndex >= 0 && row.fileIndex != u.diffSel {
+		u.diffSel = row.fileIndex
+		u.renderDetails()
+		return
+	}
+	if row.fileIndex < 0 {
+		u.previewMu.Lock()
+		u.previewSeq++
+		if u.previewCancel != nil {
+			u.previewCancel()
+			u.previewCancel = nil
+		}
+		u.previewMu.Unlock()
+		u.renderDirectoryPreview(row)
+	}
+}
+
+func (u *tuiState) toggleDiffDirectory() {
+	if len(u.diffTreeRows) == 0 || u.diffTreeRowSel < 0 || u.diffTreeRowSel >= len(u.diffTreeRows) {
+		return
+	}
+	row := u.diffTreeRows[u.diffTreeRowSel]
+	if !row.isDir || strings.TrimSpace(row.key) == "" {
+		return
+	}
+	u.diffTreeCollapsed[row.key] = !u.diffTreeCollapsed[row.key]
+	u.renderDiffFileList()
+	u.renderDirectoryPreview(u.diffTreeRows[u.diffTreeRowSel])
+}
+
+func (u *tuiState) collapseAllDiffDirectories(collapsed bool) {
+	rows, _ := buildDiffTreeRows(u.diffItems, u.diffSel, map[string]bool{}, true)
+	u.diffTreeCollapsed = map[string]bool{}
+	if collapsed {
+		for _, row := range rows {
+			if row.isDir && row.key != "" {
+				u.diffTreeCollapsed[row.key] = true
+			}
+		}
+	}
+	u.renderDiffFileList()
+	if len(u.diffTreeRows) > 0 && u.diffTreeRowSel >= 0 && u.diffTreeRowSel < len(u.diffTreeRows) {
+		row := u.diffTreeRows[u.diffTreeRowSel]
+		if row.fileIndex < 0 {
+			u.renderDirectoryPreview(row)
+		}
+	}
 }
 
 func (u *tuiState) applyFilter() {
@@ -824,13 +1050,17 @@ func (u *tuiState) applyFilter() {
 
 func (u *tuiState) refresh() error {
 	u.refreshRepoChoices(false)
-	items, err := u.mgr.ListWorktrees()
+	state, err := listWorktreesFastState(u.mgr, u.repoRoot)
 	if err != nil {
 		return err
 	}
+	items := state.Worktrees
 	u.repoBranch = u.mgr.CurrentBranch(u.repoRoot)
-	u.clearDiffCaches()
 	u.items = items
+	u.previewWorktreePath = ""
+	if st, err := u.mgr.readPreviewState(u.repoRoot); err == nil && st != nil {
+		u.previewWorktreePath = st.Path
+	}
 	alive := map[string]struct{}{}
 	for _, it := range items {
 		if strings.TrimSpace(it.Path) == "" {
@@ -846,6 +1076,18 @@ func (u *tuiState) refresh() error {
 			delete(u.agentPrompt, path)
 		}
 	}
+	u.previewMu.Lock()
+	for path := range u.agentPaneTargets {
+		if _, ok := alive[path]; !ok {
+			delete(u.agentPaneTargets, path)
+		}
+	}
+	for _, it := range items {
+		if it.AgentState != "yes" {
+			delete(u.agentPaneTargets, it.Path)
+		}
+	}
+	u.previewMu.Unlock()
 	u.applyFilter()
 	u.renderTable()
 	u.renderTableMeta()
@@ -892,6 +1134,10 @@ func (u *tuiState) detailPaneTitle() string {
 	return "[2]-Details"
 }
 
+func (u *tuiState) tablePaneTitle() string {
+	return "[3]-Worktrees"
+}
+
 func (u *tuiState) startUpdateCheck() {
 	go func() {
 		if latest, ok := checkForUpdate(Version, u.mgr.Cfg); ok {
@@ -909,37 +1155,32 @@ func (u *tuiState) shouldRefreshAgentDetail(item *Worktree) bool {
 	if item.AgentState != "yes" {
 		return false
 	}
-	activity, err := u.mgr.agentPaneActivity(u.repoRoot, item)
-	if err != nil {
-		return true
-	}
-	paneTarget := u.mgr.agentPaneTarget(u.repoRoot, item)
+	paneTarget := u.resolvedAgentPaneTarget(item)
 	if paneTarget == "" {
 		return true
 	}
-	if last, ok := u.paneActivity[paneTarget]; ok && last == activity {
+	activity, err := tmuxPaneActivityFn(paneTarget)
+	if err != nil {
+		u.previewMu.Lock()
+		u.agentTerminalView.needsReset = true
+		u.previewMu.Unlock()
+		return true
+	}
+	u.previewMu.Lock()
+	last, ok := u.paneActivity[paneTarget]
+	if ok && last == activity {
+		u.previewMu.Unlock()
 		return false
 	}
 	u.paneActivity[paneTarget] = activity
+	u.pendingPaneActivity[paneTarget] = activity
+	u.previewMu.Unlock()
 	return true
 }
 
 func (u *tuiState) renderDetailTabs() {
-	agentStyle := lipgloss.NewStyle().Foreground(ColorCyan).Bold(true)
-	diffStyle := lipgloss.NewStyle().Foreground(ColorCyan).Bold(true)
-	separator := lipgloss.NewStyle().Foreground(ColorCyan).Render("|")
-
-	switch u.detailTab {
-	case detailTabDiff:
-		diffStyle = diffStyle.Reverse(true)
-	default:
-		agentStyle = agentStyle.Reverse(true)
-	}
-
-	agent := agentStyle.Render(" AGENT OUTPUT ")
-	diff := diffStyle.Render(" GIT DIFF ")
-
-	u.detailTabs.SetText(tview.TranslateANSI(fmt.Sprintf(" %s %s %s", agent, separator, diff)))
+	diff := lipgloss.NewStyle().Foreground(ColorCyan).Bold(true).Reverse(true).Render(" GIT DIFF ")
+	u.detailTabs.SetText(tview.TranslateANSI(fmt.Sprintf(" %s", diff)))
 }
 
 func (u *tuiState) currentFilterLabel() string {
@@ -955,24 +1196,10 @@ func (u *tuiState) renderStatusPane() {
 		repoBranch = "(detached)"
 	}
 	selectedBranch := "(none)"
-	agentLabel := "n/a"
-	agentColor := ColorCyan
 	if item := u.selectedItem(); item != nil {
 		selectedBranch = item.Branch
 		if strings.TrimSpace(selectedBranch) == "" {
 			selectedBranch = "(detached)"
-		}
-		label, colorName := u.selectedAgentPromptLabel(item)
-		agentLabel = label
-		switch colorName {
-		case "green":
-			agentColor = ColorGreen
-		case "yellow":
-			agentColor = ColorEmerald // use emerald for busy
-		case "red":
-			agentColor = ColorRed
-		case "blue":
-			agentColor = ColorBlue
 		}
 	}
 	repo := u.repoName
@@ -984,17 +1211,15 @@ func (u *tuiState) renderStatusPane() {
 	branchStr := lipgloss.NewStyle().Foreground(ColorGreen).Render(repoBranch)
 	selLabel := lipgloss.NewStyle().Foreground(ColorBlue).Render("selected:")
 	selBranch := lipgloss.NewStyle().Foreground(ColorGreen).Render(selectedBranch)
-	agLabel := lipgloss.NewStyle().Foreground(ColorBlue).Render("agent:")
-	agStatus := lipgloss.NewStyle().Foreground(agentColor).Render(agentLabel)
 
 	status := fmt.Sprintf(
-		"%s %s %s %s  %s %s  %s %s",
-		check, repoStr, arrow, branchStr, selLabel, selBranch, agLabel, agStatus,
+		"%s %s %s %s  %s %s",
+		check, repoStr, arrow, branchStr, selLabel, selBranch,
 	)
 
 	if u.app.GetFocus() == u.statusPane {
 		status = lipgloss.NewStyle().Reverse(true).Render(
-			fmt.Sprintf("✓ %s -> %s   selected: %s   agent: %s   (enter to switch repo)", repo, repoBranch, selectedBranch, agentLabel),
+			fmt.Sprintf("✓ %s -> %s   selected: %s   (enter to switch repo)", repo, repoBranch, selectedBranch),
 		)
 	}
 
@@ -1182,13 +1407,17 @@ func (u *tuiState) renderTable() {
 		if branch == "" {
 			branch = "detached"
 		}
+		isPreview := u.previewWorktreePath != "" && item.Path == u.previewWorktreePath
+		branchLabel := truncate(branch, 33)
+		if isPreview {
+			branchLabel = "▶ " + branchLabel
+		}
 		status := "clean"
 		if item.Dirty {
 			status = "dirty"
 		}
-		agent := u.tableAgentLabel(item)
-
-		values := []string{cur, truncate(branch, 35), status, item.TmuxState, agent, truncatePath(item.Path, 120)}
+		agentLabel := u.tableAgentLabel(item)
+		values := []string{cur, branchLabel, status, item.TmuxState, agentLabel, truncatePath(item.Path, 120)}
 		for col, val := range values {
 			cell := tview.NewTableCell(val).SetExpansion(1).SetTextColor(tcell.ColorDefault)
 			switch col {
@@ -1211,10 +1440,16 @@ func (u *tuiState) renderTable() {
 					cell.SetTextColor(ColorToTcell(ThemeColorSecondary))
 				}
 			case 4:
-				cell.SetTextColor(tableAgentColor(val))
+				cell.SetTextColor(tableAgentColor(agentLabel))
+			case 5:
+				cell.SetTextColor(ColorToTcell(ThemeColorSecondary))
 			}
 			if item.Current && col == 1 {
 				cell.SetTextColor(ColorToTcell(ThemeColorAccent))
+				cell.SetAttributes(tcell.AttrBold)
+			}
+			if isPreview && col == 1 {
+				cell.SetTextColor(tcell.ColorGreen)
 				cell.SetAttributes(tcell.AttrBold)
 			}
 			if status == "dirty" && col == 2 {
@@ -1235,25 +1470,6 @@ func (u *tuiState) renderTable() {
 }
 
 func (u *tuiState) updateSelectedAgentCell() {
-	item := u.selectedItem()
-	if item == nil {
-		return
-	}
-	if u.selected < 0 || u.selected >= len(u.visible) {
-		return
-	}
-	row := u.selected + 1
-	if row <= 0 {
-		return
-	}
-	label := u.tableAgentLabel(*item)
-	cell := u.table.GetCell(row, 4)
-	if cell == nil {
-		return
-	}
-	cell.SetText(label)
-	cell.SetTextColor(tableAgentColor(label))
-	u.table.SetCell(row, 4, cell)
 }
 
 func (u *tuiState) renderTableMeta() {
@@ -1291,6 +1507,8 @@ func (u *tuiState) selectedAgentPromptLabel(item *Worktree) (string, string) {
 		return "running", "blue"
 	}
 	switch state {
+	case agentPromptNeedsInput:
+		return "needs input", "magenta"
 	case agentPromptReady:
 		return "ready", "green"
 	case agentPromptBusy:
@@ -1309,6 +1527,8 @@ func (u *tuiState) tableAgentLabel(item Worktree) string {
 		return "yes"
 	}
 	switch state {
+	case agentPromptNeedsInput:
+		return "needs input"
 	case agentPromptReady:
 		return "ready"
 	case agentPromptBusy:
@@ -1322,6 +1542,8 @@ func tableAgentColor(label string) tcell.Color {
 	switch label {
 	case "ready", "yes":
 		return tcell.ColorGreen
+	case "needs input":
+		return ansiColor(ansiMagenta)
 	case "busy", "running":
 		return tcell.ColorYellow
 	case "no", "offline":
@@ -1344,40 +1566,83 @@ func (u *tuiState) setAgentPromptState(item *Worktree, next agentPromptState) {
 		return
 	}
 	u.agentPrompt[item.Path] = next
-	if next == agentPromptReady && (!hadPrev || prev != agentPromptReady) {
-		branch := item.Branch
-		if strings.TrimSpace(branch) == "" {
-			branch = filepath.Base(item.Path)
-		}
-		u.setInfo("agent ready for input: %s", branch)
-	}
 	u.renderStatusPane()
 	u.updateSelectedAgentCell()
+}
+
+func (u *tuiState) resolvedAgentPaneTarget(item *Worktree) string {
+	if item == nil || strings.TrimSpace(item.Path) == "" {
+		return ""
+	}
+	if item.AgentState != "yes" {
+		u.previewMu.Lock()
+		delete(u.agentPaneTargets, item.Path)
+		u.previewMu.Unlock()
+		return ""
+	}
+	u.previewMu.Lock()
+	if target, ok := u.agentPaneTargets[item.Path]; ok && strings.TrimSpace(target) != "" {
+		u.previewMu.Unlock()
+		return target
+	}
+	u.previewMu.Unlock()
+	target := strings.TrimSpace(u.mgr.agentPaneTarget(u.repoRoot, item))
+	if target == "" {
+		return ""
+	}
+	u.previewMu.Lock()
+	u.agentPaneTargets[item.Path] = target
+	u.previewMu.Unlock()
+	return target
+}
+
+func (u *tuiState) ensureAgentStreamLog(item *Worktree, paneTarget string, seedLines int, reset bool) (string, error) {
+	if item == nil || strings.TrimSpace(item.Path) == "" || strings.TrimSpace(paneTarget) == "" {
+		return "", fmt.Errorf("agent stream is not available")
+	}
+	u.previewMu.Lock()
+	if !reset {
+		if path, ok := u.agentStreamLogs[paneTarget]; ok && strings.TrimSpace(path) != "" {
+			u.previewMu.Unlock()
+			return path, nil
+		}
+	}
+	u.previewMu.Unlock()
+
+	logPath, err := ensurePaneStreamFn(u.mgr, u.repoRoot, paneTarget, seedLines, reset)
+	if err != nil {
+		return "", err
+	}
+	u.previewMu.Lock()
+	u.agentStreamLogs[paneTarget] = logPath
+	u.previewMu.Unlock()
+	return logPath, nil
 }
 
 func (u *tuiState) captureAgentPromptState(item *Worktree, lines int) {
 	if item == nil || item.AgentState != "yes" {
 		return
 	}
-	activity, err := u.mgr.agentPaneActivity(u.repoRoot, item)
-	if err == nil {
-		paneTarget := u.mgr.agentPaneTarget(u.repoRoot, item)
-		if paneTarget != "" {
-			if last, ok := u.panePromptActivity[paneTarget]; ok && last == activity {
-				return
-			}
-			u.panePromptActivity[paneTarget] = activity
-		}
+	paneTarget := u.resolvedAgentPaneTarget(item)
+	if paneTarget == "" {
+		return
 	}
-	out, err := u.mgr.agentOutputForWorktree(u.repoRoot, item, lines)
+	activity, err := tmuxPaneActivity(paneTarget)
+	if err == nil {
+		if last, ok := u.panePromptActivity[paneTarget]; ok && last == activity {
+			return
+		}
+		u.panePromptActivity[paneTarget] = activity
+	}
+	logPath, err := u.ensureAgentStreamLog(item, paneTarget, lines, false)
 	if err != nil {
 		return
 	}
-	if agentReadyForInstruction(out) {
-		u.setAgentPromptState(item, agentPromptReady)
+	out, err := readTailLines(logPath, lines)
+	if err != nil {
 		return
 	}
-	u.setAgentPromptState(item, agentPromptBusy)
+	u.setAgentPromptState(item, agentPromptStateForOutput(out))
 }
 
 func stripANSI(input string) string {
@@ -1419,6 +1684,70 @@ func stripANSI(input string) string {
 	return b.String()
 }
 
+func normalizeTerminalStream(input string) string {
+	var (
+		out  strings.Builder
+		line strings.Builder
+	)
+	line.Grow(len(input))
+
+	flushLine := func() {
+		out.WriteString(line.String())
+		line.Reset()
+	}
+
+	for i := 0; i < len(input); i++ {
+		switch input[i] {
+		case '\x1b':
+			next, ok := consumeANSIEscape(input, i)
+			if !ok {
+				continue
+			}
+			seq := input[i:next]
+			// Keep SGR color/style codes, ignore cursor/erase controls that a text view
+			// cannot replay correctly from a streamed log.
+			if strings.HasPrefix(seq, "\x1b[") && strings.HasSuffix(seq, "m") {
+				line.WriteString(seq)
+			}
+			i = next - 1
+		case '\r':
+			line.Reset()
+		case '\n':
+			flushLine()
+			out.WriteByte('\n')
+		case '\b':
+			current := []rune(line.String())
+			if len(current) > 0 {
+				line.Reset()
+				line.WriteString(string(current[:len(current)-1]))
+			}
+		default:
+			line.WriteByte(input[i])
+		}
+	}
+
+	if line.Len() > 0 {
+		flushLine()
+	}
+	return out.String()
+}
+
+func terminalStreamNeedsSnapshot(input string) bool {
+	if strings.Contains(input, "\x1b[?1049") {
+		return true
+	}
+	if strings.Contains(input, "\x1b[2J") || strings.Contains(input, "\x1b[J") {
+		return true
+	}
+	if strings.Contains(input, "\x1b[H") || strings.Contains(input, "\x1b[f") {
+		return true
+	}
+	if strings.Count(input, "\r") > 8 && strings.Count(input, "\n") <= 2 {
+		return true
+	}
+	return false
+}
+
 func agentReadyForInstruction(output string) bool {
 	plain := stripANSI(output)
 	lines := strings.Split(strings.ReplaceAll(plain, "\r", "\n"), "\n")
@@ -1451,69 +1780,292 @@ func agentReadyForInstruction(output string) bool {
 	return false
 }
 
-func (u *tuiState) renderDetails() {
-	switch u.detailTab {
-	case detailTabDiff:
-		u.renderDiffDetail()
+func agentPromptStateName(state agentPromptState) string {
+	switch state {
+	case agentPromptReady:
+		return "ready"
+	case agentPromptBusy:
+		return "busy"
+	case agentPromptNeedsInput:
+		return "needs_input"
 	default:
-		u.renderAgentDetail()
+		return "unknown"
 	}
 }
 
-func (u *tuiState) renderAgentDetail() {
-	item := u.selectedItem()
-	if item == nil {
-		u.setDetailText("Select a worktree to view agent output.", false)
-		return
+func agentPromptStateFromName(name string) agentPromptState {
+	switch strings.TrimSpace(name) {
+	case "ready":
+		return agentPromptReady
+	case "busy":
+		return agentPromptBusy
+	case "needs_input":
+		return agentPromptNeedsInput
+	default:
+		return agentPromptUnknown
 	}
+}
 
-	captureLines := u.detailCaptureLineCount()
-	if item.AgentState != "yes" {
-		u.setAgentPromptState(item, agentPromptUnknown)
-		u.setDetailText(
-			"Agent pane is not available for this worktree.\n\n"+
-				"Press enter on the worktree list to attach.\n"+
-				"A tmux session will open with your configured session tools.",
-			false,
-		)
-		return
-	}
-
-	u.syncDetailPaneSize(item)
-	paneTarget := u.mgr.agentPaneTarget(u.repoRoot, item)
-	var out string
-	activity, activityErr := u.mgr.agentPaneActivity(u.repoRoot, item)
-	if paneTarget != "" && activityErr == nil {
-		if last, ok := u.agentOutputActivity[paneTarget]; ok && last == activity {
-			if cached, ok := u.agentOutputCache[paneTarget]; ok {
-				out = cached
-			}
+func detectNeedsInput(output string) bool {
+	plain := strings.ToLower(stripANSI(output))
+	lines := strings.Split(strings.ReplaceAll(plain, "\r", "\n"), "\n")
+	seen := 0
+	for i := len(lines) - 1; i >= 0 && seen < 16; i-- {
+		line := strings.TrimSpace(lines[i])
+		if line == "" {
+			continue
+		}
+		seen++
+		if strings.Contains(line, "awaiting your input") ||
+			strings.Contains(line, "waiting for your input") ||
+			strings.Contains(line, "need your input") ||
+			strings.Contains(line, "need input from you") ||
+			strings.Contains(line, "please advise") ||
+			strings.Contains(line, "please confirm") ||
+			strings.Contains(line, "can you confirm") ||
+			strings.Contains(line, "which would you prefer") ||
+			strings.Contains(line, "what should i do next") ||
+			strings.Contains(line, "what would you like me to do next") {
+			return true
 		}
 	}
-	if out == "" {
-		fetched, err := u.mgr.agentOutputForWorktree(u.repoRoot, item, captureLines)
-		if err != nil {
+	return false
+}
+
+func agentPromptStateForOutput(output string) agentPromptState {
+	if detectNeedsInput(output) {
+		return agentPromptNeedsInput
+	}
+	if agentReadyForInstruction(output) {
+		return agentPromptReady
+	}
+	return agentPromptBusy
+}
+
+func (u *tuiState) renderDetails() {
+	item := u.selectedItem()
+	tab := u.detailTab
+	diffSel := u.diffSel
+	lines := u.detailCaptureLineCount()
+	diffWidth := u.detailDiffWidth()
+	termSize := u.agentTerminalInnerSize()
+
+	u.previewMu.Lock()
+	u.previewSeq++
+	seq := u.previewSeq
+	if u.previewCancel != nil {
+		u.previewCancel()
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	u.previewCancel = cancel
+	u.previewMu.Unlock()
+
+	switch tab {
+	case detailTabDiff:
+		if strings.TrimSpace(u.lastDiff) == "" {
+			u.setDiffText("Loading diff…", false)
+		}
+	default:
+		if strings.TrimSpace(u.lastDetail) == "" {
+			u.setDetailText("Loading details…", false)
+		}
+	}
+
+	go u.computeDetailPreview(ctx, seq, tab, item, diffSel, lines, diffWidth, termSize)
+}
+
+func (u *tuiState) computeDetailPreview(ctx context.Context, seq int64, tab detailTab, item *Worktree, diffSel int, captureLines int, diffWidth int, termSize paneSize) {
+	switch tab {
+	case detailTabDiff:
+		u.computeDiffPreview(ctx, seq, item, diffSel, diffWidth)
+	default:
+		u.computeAgentPreview(ctx, seq, item, captureLines, termSize)
+	}
+}
+
+func (u *tuiState) computeAgentPreview(ctx context.Context, seq int64, item *Worktree, captureLines int, termSize paneSize) {
+	_ = captureLines
+	_ = termSize
+	if item == nil {
+		u.applyDetailPreview(seq, detailTabAgent, func() {
+			u.setDetailText("Select a worktree.", false)
+		})
+		return
+	}
+
+	if item.AgentState != "yes" {
+		u.applyDetailPreview(seq, detailTabAgent, func() {
 			u.setAgentPromptState(item, agentPromptUnknown)
-			u.setDetailText(fmt.Sprintf("Unable to read agent output.\n\n%s", err), false)
+			u.setDetailText(
+				"Agent session is not available for this worktree.\n\n"+
+					"Press enter on the worktree list to attach.\n"+
+					"A tmux session will open with your configured session tools.",
+				false,
+			)
+		})
+		return
+	}
+
+	paneTarget := u.resolvedAgentPaneTarget(item)
+	if paneTarget == "" {
+		u.applyDetailPreview(seq, detailTabAgent, func() {
+			u.setAgentPromptState(item, agentPromptUnknown)
+			u.setDetailText("Agent session is not available for this worktree.", false)
+		})
+		return
+	}
+
+	activity, activityErr := tmuxPaneActivityFn(paneTarget)
+	select {
+	case <-ctx.Done():
+		return
+	default:
+	}
+	select {
+	case <-ctx.Done():
+		return
+	default:
+	}
+	u.applyDetailPreview(seq, detailTabAgent, func() {
+		if paneTarget != "" {
+			if activityErr == nil {
+				u.paneActivity[paneTarget] = activity
+			}
+		}
+		u.setDetailText(u.renderAgentStatusSummary(item, paneTarget, activity, activityErr), false)
+	})
+}
+
+func errorsIsCanceled(err error) bool {
+	return err == context.Canceled || err == context.DeadlineExceeded
+}
+
+func (u *tuiState) applyDetailPreview(seq int64, tab detailTab, apply func()) {
+	u.app.QueueUpdateDraw(func() {
+		u.previewMu.Lock()
+		currentSeq := u.previewSeq
+		u.previewMu.Unlock()
+		if seq != currentSeq || u.detailTab != tab {
 			return
 		}
-		out = fetched
-		if paneTarget != "" {
-			u.agentOutputCache[paneTarget] = out
-			if activityErr == nil {
-				u.agentOutputActivity[paneTarget] = activity
-			}
+		apply()
+	})
+}
+
+func (u *tuiState) computeDiffPreview(ctx context.Context, seq int64, item *Worktree, diffSel int, diffWidth int) {
+	if item == nil {
+		u.applyDetailPreview(seq, detailTabDiff, func() {
+			u.diffItems = nil
+			u.diffSel = 0
+			u.diffPath = ""
+			u.renderDiffFileList()
+			u.setDiffText("Select a worktree to view git diff.", false)
+		})
+		return
+	}
+
+	snapshot, err := u.cachedDiffFilesSnapshot(ctx, item.Path)
+	if err != nil {
+		if errorsIsCanceled(err) {
+			return
+		}
+		u.applyDetailPreview(seq, detailTabDiff, func() {
+			u.diffItems = nil
+			u.diffSel = 0
+			u.diffPath = item.Path
+			u.renderDiffFileList()
+			u.setDiffText(fmt.Sprintf("Unable to read git diff.\n\n%s", err), false)
+		})
+		return
+	}
+	select {
+	case <-ctx.Done():
+		return
+	default:
+	}
+	files := snapshot.files
+	selected := diffSel
+	if selected < 0 {
+		selected = 0
+	}
+	if len(files) > 0 && selected >= len(files) {
+		selected = len(files) - 1
+	}
+	var diffText string
+	if len(files) > 0 {
+		diffText, err = u.cachedFileDiff(ctx, item.Path, snapshot.digest, files[selected], diffWidth)
+		if err != nil && !errorsIsCanceled(err) {
+			diffText = fmt.Sprintf("Unable to read file diff.\n\n%s", err)
 		}
 	}
-	if strings.TrimSpace(out) == "" {
-		u.setAgentPromptState(item, agentPromptBusy)
-		out = "(agent pane is running, but no output yet)"
-	} else if agentReadyForInstruction(out) {
-		u.setAgentPromptState(item, agentPromptReady)
-	} else {
-		u.setAgentPromptState(item, agentPromptBusy)
+	if errorsIsCanceled(err) {
+		return
 	}
-	u.setDetailANSI(out, true)
+	u.applyDetailPreview(seq, detailTabDiff, func() {
+		u.syncDiffFiles(item.Path, files)
+		if selected >= 0 && selected < len(u.diffItems) {
+			u.diffSel = selected
+		}
+		u.renderDiffFileList()
+		if len(u.diffItems) == 0 {
+			u.setDiffText("(working tree is clean)", false)
+			return
+		}
+		u.setDiffANSI(diffText, false)
+	})
+}
+
+func (u *tuiState) renderAgentDetail() {
+	u.renderDetails()
+}
+
+func formatPaneActivity(ts int64) string {
+	if ts <= 0 {
+		return "unknown"
+	}
+	last := time.Unix(ts, 0)
+	if last.IsZero() {
+		return "unknown"
+	}
+	delta := time.Since(last).Round(time.Second)
+	if delta < 0 {
+		delta = 0
+	}
+	return fmt.Sprintf("%s ago", delta)
+}
+
+func (u *tuiState) renderAgentStatusSummary(item *Worktree, paneTarget string, activity int64, activityErr error) string {
+	if item == nil {
+		return "Select a worktree."
+	}
+
+	status, _ := u.selectedAgentPromptLabel(item)
+	branch := strings.TrimSpace(item.Branch)
+	if branch == "" {
+		branch = filepath.Base(item.Path)
+	}
+
+	lastActivity := "unavailable"
+	if activityErr == nil {
+		lastActivity = formatPaneActivity(activity)
+	}
+
+	lines := []string{
+		fmt.Sprintf("Status: %s", status),
+		fmt.Sprintf("Branch: %s", branch),
+		fmt.Sprintf("Path: %s", item.Path),
+	}
+	if strings.TrimSpace(paneTarget) != "" {
+		lines = append(lines, fmt.Sprintf("Pane: %s", paneTarget))
+	}
+	lines = append(lines, fmt.Sprintf("Last activity: %s", lastActivity))
+	lines = append(lines, "")
+	lines = append(lines, "Actions:")
+	lines = append(lines, "enter or g: attach to the worktree tmux session")
+	lines = append(lines, "p: promote the selected worktree to preview")
+	lines = append(lines, "h/l or [ ]: switch tabs")
+
+	return strings.Join(lines, "\n")
 }
 
 func (u *tuiState) clearDiffCaches() {
@@ -1522,80 +2074,103 @@ func (u *tuiState) clearDiffCaches() {
 	u.lastDiff = ""
 }
 
-func (u *tuiState) cachedDiffFiles(path string) ([]DiffFile, error) {
-	now := time.Now()
-	if entry, ok := u.diffCache[path]; ok && now.Sub(entry.fetchedAt) <= diffFilesCacheTTL {
-		return entry.files, nil
-	}
-	files, err := u.mgr.WorktreeDiffFiles(path)
-	if err != nil {
-		return nil, err
-	}
-	u.diffCache[path] = diffFilesCacheEntry{
-		files:     files,
-		fetchedAt: now,
-	}
-	if len(u.diffCache) > 128 {
-		u.diffCache = map[string]diffFilesCacheEntry{path: u.diffCache[path]}
-	}
-	return files, nil
+type diffSnapshotResult struct {
+	digest string
+	files  []DiffFile
 }
 
-func diffPatchCacheKey(path string, file DiffFile, width int) string {
+func (u *tuiState) cachedDiffFilesSnapshot(ctx context.Context, path string) (diffSnapshotResult, error) {
+	u.previewMu.Lock()
+	if entry, ok := u.diffCache[path]; ok {
+		u.cacheUse++
+		entry.lastUsed = u.cacheUse
+		u.diffCache[path] = entry
+		u.previewMu.Unlock()
+		return diffSnapshotResult{digest: entry.digest, files: entry.files}, nil
+	}
+	u.previewMu.Unlock()
+	snapshot, err := u.mgr.WorktreeDiffSnapshotContext(ctx, path)
+	if err != nil {
+		return diffSnapshotResult{}, err
+	}
+	u.previewMu.Lock()
+	u.cacheUse++
+	u.diffCache[path] = diffFilesCacheEntry{digest: snapshot.Digest, files: snapshot.Files, lastUsed: u.cacheUse}
+	u.evictDiffFileCacheLocked(128)
+	u.previewMu.Unlock()
+	return diffSnapshotResult{digest: snapshot.Digest, files: snapshot.Files}, nil
+}
+
+func diffPatchCacheKey(path, digest string, file DiffFile, width int) string {
 	return strings.Join([]string{
 		path,
+		digest,
 		file.Path,
+		file.PreviousPath,
 		file.Status,
 		strconv.Itoa(width),
 	}, "\x00")
 }
 
-func (u *tuiState) cachedFileDiff(path string, file DiffFile, width int) (string, error) {
-	key := diffPatchCacheKey(path, file, width)
-	now := time.Now()
-	if entry, ok := u.patchCache[key]; ok && now.Sub(entry.fetchedAt) <= diffPatchCacheTTL {
+func (u *tuiState) cachedFileDiff(ctx context.Context, path, digest string, file DiffFile, width int) (string, error) {
+	key := diffPatchCacheKey(path, digest, file, width)
+	u.previewMu.Lock()
+	if entry, ok := u.patchCache[key]; ok {
+		u.cacheUse++
+		entry.lastUsed = u.cacheUse
+		u.patchCache[key] = entry
+		u.previewMu.Unlock()
 		return entry.text, nil
 	}
-	diff, err := u.mgr.WorktreeDiffForFile(path, file, width)
+	u.previewMu.Unlock()
+	diff, err := u.mgr.WorktreeDiffForFileContext(ctx, path, file, width)
 	if err != nil {
 		return "", err
 	}
-	u.patchCache[key] = diffPatchCacheEntry{
-		text:      diff,
-		fetchedAt: now,
-	}
-	if len(u.patchCache) > 512 {
-		u.patchCache = map[string]diffPatchCacheEntry{key: u.patchCache[key]}
-	}
+	u.previewMu.Lock()
+	u.cacheUse++
+	u.patchCache[key] = diffPatchCacheEntry{text: diff, lastUsed: u.cacheUse}
+	u.evictDiffPatchCacheLocked(512)
+	u.previewMu.Unlock()
 	return diff, nil
 }
 
+func (u *tuiState) evictDiffFileCacheLocked(limit int) {
+	if len(u.diffCache) <= limit {
+		return
+	}
+	var oldestKey string
+	var oldestUse uint64
+	first := true
+	for key, entry := range u.diffCache {
+		if first || entry.lastUsed < oldestUse {
+			first = false
+			oldestKey = key
+			oldestUse = entry.lastUsed
+		}
+	}
+	delete(u.diffCache, oldestKey)
+}
+
+func (u *tuiState) evictDiffPatchCacheLocked(limit int) {
+	if len(u.patchCache) <= limit {
+		return
+	}
+	var oldestKey string
+	var oldestUse uint64
+	first := true
+	for key, entry := range u.patchCache {
+		if first || entry.lastUsed < oldestUse {
+			first = false
+			oldestKey = key
+			oldestUse = entry.lastUsed
+		}
+	}
+	delete(u.patchCache, oldestKey)
+}
+
 func (u *tuiState) renderDiffDetail() {
-	item := u.selectedItem()
-	if item == nil {
-		u.diffItems = nil
-		u.diffSel = 0
-		u.diffPath = ""
-		u.renderDiffFileList()
-		u.setDiffText("Select a worktree to view git diff.", false)
-		return
-	}
-	files, err := u.cachedDiffFiles(item.Path)
-	if err != nil {
-		u.diffItems = nil
-		u.diffSel = 0
-		u.diffPath = item.Path
-		u.renderDiffFileList()
-		u.setDiffText(fmt.Sprintf("Unable to read git diff.\n\n%s", err), false)
-		return
-	}
-	u.syncDiffFiles(item.Path, files)
-	u.renderDiffFileList()
-	if len(u.diffItems) == 0 {
-		u.setDiffText("(working tree is clean)", false)
-		return
-	}
-	u.renderSelectedFileDiff()
+	u.renderDetails()
 }
 
 func (u *tuiState) syncDiffFiles(path string, files []DiffFile) {
@@ -1610,11 +2185,13 @@ func (u *tuiState) syncDiffFiles(path string, files []DiffFile) {
 
 	if len(u.diffItems) == 0 {
 		u.diffSel = 0
+		u.diffTreeRowSel = 0
 		return
 	}
 
 	if switchedWorktree {
 		u.diffSel = 0
+		u.diffTreeRowSel = 0
 	}
 	if prev != "" {
 		for i := range u.diffItems {
@@ -1648,57 +2225,170 @@ func diffStatusColor(status string) tcell.Color {
 	}
 }
 
+type diffTreeNode struct {
+	name     string
+	children map[string]*diffTreeNode
+	files    []int
+}
+
+func buildDiffTreeRows(files []DiffFile, selected int, collapsed map[string]bool, treeMode bool) ([]diffTreeRow, int) {
+	if !treeMode {
+		rows := make([]diffTreeRow, 0, len(files))
+		selectedRow := 0
+		for i, file := range files {
+			if i == selected {
+				selectedRow = len(rows)
+			}
+			rows = append(rows, diffTreeRow{
+				label:     file.Path,
+				status:    file.Status,
+				fileIndex: i,
+				key:       file.Path,
+			})
+		}
+		return rows, selectedRow
+	}
+
+	root := &diffTreeNode{children: map[string]*diffTreeNode{}}
+	for i, file := range files {
+		parts := strings.Split(file.Path, "/")
+		node := root
+		for _, part := range parts[:len(parts)-1] {
+			if node.children[part] == nil {
+				node.children[part] = &diffTreeNode{name: part, children: map[string]*diffTreeNode{}}
+			}
+			node = node.children[part]
+		}
+		node.files = append(node.files, i)
+	}
+
+	rows := make([]diffTreeRow, 0, len(files))
+	selectedRow := 0
+	var walk func(node *diffTreeNode, depth int, parentKey string)
+	compress := func(node *diffTreeNode) (string, *diffTreeNode) {
+		parts := []string{node.name}
+		current := node
+		for len(current.files) == 0 && len(current.children) == 1 {
+			for _, child := range current.children {
+				parts = append(parts, child.name)
+				current = child
+				break
+			}
+		}
+		return strings.Join(parts, "/"), current
+	}
+	walk = func(node *diffTreeNode, depth int, parentKey string) {
+		dirNames := make([]string, 0, len(node.children))
+		for name := range node.children {
+			dirNames = append(dirNames, name)
+		}
+		sort.Strings(dirNames)
+		for _, name := range dirNames {
+			compacted, current := compress(node.children[name])
+			dirKey := strings.Trim(strings.Trim(parentKey, "/")+"/"+compacted, "/")
+			rows = append(rows, diffTreeRow{
+				label:     compacted + "/",
+				fileIndex: -1,
+				isDir:     true,
+				depth:     depth,
+				key:       dirKey,
+			})
+			if !collapsed[dirKey] {
+				walk(current, depth+1, dirKey)
+			}
+		}
+		for _, fileIndex := range node.files {
+			if selected == fileIndex {
+				selectedRow = len(rows)
+			}
+			rows = append(rows, diffTreeRow{
+				label:     filepath.Base(files[fileIndex].Path),
+				status:    files[fileIndex].Status,
+				fileIndex: fileIndex,
+				isDir:     false,
+				depth:     depth,
+				key:       files[fileIndex].Path,
+			})
+		}
+	}
+	walk(root, 0, "")
+	return rows, selectedRow
+}
+
 func (u *tuiState) renderDiffFileList() {
 	u.diffFiles.Clear()
-	headers := []string{"", "ST", "FILE"}
+	headers := []string{"", "FILES"}
 	for col, h := range headers {
 		cell := tview.NewTableCell(h).
 			SetAttributes(tcell.AttrBold).
 			SetTextColor(ansiColor(ansiCyan)).
-			SetExpansion(1).
 			SetSelectable(false)
+		if col == 1 {
+			cell.SetExpansion(1)
+		}
 		u.diffFiles.SetCell(0, col, cell)
 	}
 
 	if len(u.diffItems) == 0 {
 		u.diffFiles.SetCell(1, 0, tview.NewTableCell("").SetSelectable(false))
-		u.diffFiles.SetCell(1, 1, tview.NewTableCell("").SetSelectable(false))
-		u.diffFiles.SetCell(1, 2, tview.NewTableCell("(no changed files)").SetTextColor(ansiColor(ansiMagenta)).SetSelectable(false))
+		u.diffFiles.SetCell(1, 1, tview.NewTableCell("(no changed files)").SetTextColor(ansiColor(ansiMagenta)).SetSelectable(false))
 		u.diffFiles.SetCounter("0 of 0")
 		u.diffFiles.SetOffset(0, 0)
 		return
 	}
 
-	for i, f := range u.diffItems {
+	rows, selectedRow := buildDiffTreeRows(u.diffItems, u.diffSel, u.diffTreeCollapsed, u.diffTree)
+	u.diffTreeRows = rows
+	if u.diffTreeRowSel < 0 || u.diffTreeRowSel >= len(rows) {
+		u.diffTreeRowSel = selectedRow
+	}
+	if len(rows) > 0 {
+		selectedRow = u.diffTreeRowSel
+	}
+	for i, entry := range rows {
 		row := i + 1
-		selected := i == u.diffSel
+		selected := i == u.diffTreeRowSel
 		marker := " "
 		if selected {
 			marker = ">"
 		}
-		status := strings.TrimSpace(f.Status)
-		if status == "" {
+		status := strings.TrimSpace(entry.status)
+		if !entry.isDir && status == "" {
 			status = "??"
 		}
 
-		markerCell := tview.NewTableCell(marker).SetExpansion(1).SetTextColor(ansiColor(ansiCyan))
-		statusCell := tview.NewTableCell(status).SetExpansion(1).SetTextColor(diffStatusColor(status))
-		pathCell := tview.NewTableCell(truncatePath(f.Path, 80)).SetExpansion(1).SetTextColor(tcell.ColorDefault)
+		markerCell := tview.NewTableCell(marker).SetTextColor(ansiColor(ansiCyan))
+		statusColor := diffStatusColor(status)
+		if entry.isDir {
+			statusColor = ansiColor(ansiCyan)
+		}
+		indent := strings.Repeat("  ", entry.depth)
+		label := indent + entry.label
+		if entry.isDir && u.diffTree {
+			icon := "▾ "
+			if u.diffTreeCollapsed[entry.key] {
+				icon = "▸ "
+			}
+			label = indent + icon + entry.label
+		}
+		if !entry.isDir {
+			label = fmt.Sprintf("%-2s %s", status, entry.label)
+			label = indent + label
+		}
+		pathCell := tview.NewTableCell(truncatePath(label, 100)).SetExpansion(1).SetTextColor(statusColor)
 		if selected {
 			markerCell.SetAttributes(tcell.AttrReverse)
-			statusCell.SetAttributes(tcell.AttrReverse)
 			pathCell.SetAttributes(tcell.AttrReverse)
 		}
 		u.diffFiles.SetCell(row, 0, markerCell)
-		u.diffFiles.SetCell(row, 1, statusCell)
-		u.diffFiles.SetCell(row, 2, pathCell)
+		u.diffFiles.SetCell(row, 1, pathCell)
 	}
 	u.diffFiles.SetCounter(fmt.Sprintf("%d of %d", u.diffSel+1, len(u.diffItems)))
-	u.ensureDiffSelectionVisible()
+	u.ensureDiffSelectionVisible(selectedRow, len(rows))
 }
 
-func (u *tuiState) ensureDiffSelectionVisible() {
-	if len(u.diffItems) == 0 {
+func (u *tuiState) ensureDiffSelectionVisible(selectedRow int, totalRows int) {
+	if totalRows == 0 {
 		u.diffFiles.SetOffset(0, 0)
 		return
 	}
@@ -1707,11 +2397,11 @@ func (u *tuiState) ensureDiffSelectionVisible() {
 	if visibleRows < 1 {
 		visibleRows = 1
 	}
-	maxOffset := len(u.diffItems) - visibleRows
+	maxOffset := totalRows - visibleRows
 	if maxOffset < 0 {
 		maxOffset = 0
 	}
-	offset := u.diffSel - (visibleRows / 2)
+	offset := selectedRow - (visibleRows / 2)
 	if offset < 0 {
 		offset = 0
 	}
@@ -1722,21 +2412,28 @@ func (u *tuiState) ensureDiffSelectionVisible() {
 }
 
 func (u *tuiState) renderSelectedFileDiff() {
-	item := u.selectedItem()
-	if item == nil {
-		u.setDiffText("No worktree selected.", false)
+	u.renderDetails()
+}
+
+func (u *tuiState) renderDirectoryPreview(row diffTreeRow) {
+	if !row.isDir {
 		return
 	}
-	if len(u.diffItems) == 0 || u.diffSel < 0 || u.diffSel >= len(u.diffItems) {
-		u.setDiffText("(working tree is clean)", false)
-		return
+	prefix := strings.TrimSuffix(row.key, "/")
+	if prefix != "" {
+		prefix += "/"
 	}
-	diff, err := u.cachedFileDiff(item.Path, u.diffItems[u.diffSel], u.detailDiffWidth())
-	if err != nil {
-		u.setDiffText(fmt.Sprintf("Unable to read file diff.\n\n%s", err), false)
-		return
+	count := 0
+	for _, file := range u.diffItems {
+		if strings.HasPrefix(file.Path, prefix) {
+			count++
+		}
 	}
-	u.setDiffANSI(diff, false)
+	state := "expanded"
+	if u.diffTreeCollapsed[row.key] {
+		state = "collapsed"
+	}
+	u.setDiffText(fmt.Sprintf("%s (%s)\n\n%d changed files\n\nenter: toggle directory\n`: tree/flat\n-: collapse all\n=: expand all", row.label, state, count), false)
 }
 
 func (u *tuiState) detailDiffWidth() int {
@@ -1747,11 +2444,31 @@ func (u *tuiState) detailDiffWidth() int {
 	return w
 }
 
+func (u *tuiState) agentTerminalInnerSize() paneSize {
+	_, _, w, h := u.agentTerm.GetInnerRect()
+	if w <= 0 {
+		w = 80
+	}
+	if h <= 0 {
+		h = 24
+	}
+	return paneSize{w: w, h: h}
+}
+
 func (u *tuiState) syncDetailPaneSize(item *Worktree) {
 	if item == nil {
 		return
 	}
-	_, _, w, h := u.detail.GetInnerRect()
+	target := u.detail
+	if u.detailTab == detailTabAgent {
+		target = nil
+	}
+	var w, h int
+	if target == nil {
+		_, _, w, h = u.agentTerm.GetInnerRect()
+	} else {
+		_, _, w, h = target.GetInnerRect()
+	}
 	if w <= 0 || h <= 0 {
 		return
 	}
@@ -1777,11 +2494,17 @@ func (u *tuiState) syncDetailPaneSize(item *Worktree) {
 }
 
 func (u *tuiState) setDetailText(text string, follow bool) {
+	u.agentPages.ShowPage("text")
+	u.agentPages.HidePage("terminal")
+	u.agentDetailTextMode = true
 	u.setDetailRenderedText(tview.Escape(text), follow)
 }
 
 func (u *tuiState) setDetailANSI(text string, follow bool) {
-	u.setDetailRenderedText(tview.TranslateANSI(text), follow)
+	u.agentPages.ShowPage("text")
+	u.agentPages.HidePage("terminal")
+	u.agentDetailTextMode = true
+	u.setDetailRenderedText(tview.TranslateANSI(normalizeTerminalStream(text)), follow)
 }
 
 func (u *tuiState) setDetailRenderedText(text string, follow bool) {
@@ -1789,8 +2512,13 @@ func (u *tuiState) setDetailRenderedText(text string, follow bool) {
 		return
 	}
 	row, col := u.detail.GetScrollOffset()
+	stickToEnd := follow && u.detailIsPinnedToBottom()
 	u.detail.SetText(text)
 	u.lastDetail = text
+	if stickToEnd {
+		u.detail.ScrollToEnd()
+		return
+	}
 	if u.app.GetFocus() == u.detail {
 		u.detail.ScrollTo(row, col)
 		return
@@ -1802,8 +2530,181 @@ func (u *tuiState) setDetailRenderedText(text string, follow bool) {
 	}
 }
 
+func (u *tuiState) setAgentTerminalData(paneTarget string, data []byte, reset bool) {
+	u.agentPages.ShowPage("terminal")
+	u.agentPages.HidePage("text")
+	u.agentDetailTextMode = false
+	_, _, w, h := u.agentTerm.GetInnerRect()
+	if w <= 0 {
+		w = 80
+	}
+	if h <= 0 {
+		h = 24
+	}
+	if reset {
+		u.agentTerm.ResetWithData(paneTarget, data, w, h)
+		return
+	}
+	u.agentTerm.AppendData(paneTarget, data, w, h)
+}
+
+func (u *tuiState) detailIsPinnedToBottom() bool {
+	row, _ := u.detail.GetScrollOffset()
+	_, _, _, h := u.detail.GetInnerRect()
+	if h <= 0 {
+		return true
+	}
+	lineCount := strings.Count(u.lastDetail, "\n") + 1
+	maxTop := lineCount - h
+	if maxTop < 0 {
+		maxTop = 0
+	}
+	return row >= maxTop-1
+}
+
 func (u *tuiState) setDiffText(text string, keepScroll bool) {
 	u.setDiffRenderedText(tview.Escape(text), keepScroll)
+}
+
+func readFileChunk(path string, offset int64) (fileChunkResult, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return fileChunkResult{nextOffset: offset}, err
+	}
+	defer f.Close()
+
+	info, err := f.Stat()
+	if err != nil {
+		return fileChunkResult{nextOffset: offset}, err
+	}
+	size := info.Size()
+	rolledBack := false
+	if offset < 0 {
+		offset = 0
+	}
+	if offset > size {
+		offset = 0
+		rolledBack = true
+	}
+	buf := make([]byte, size-offset)
+	if len(buf) == 0 {
+		return fileChunkResult{nextOffset: size, reset: rolledBack}, nil
+	}
+	if _, err := f.ReadAt(buf, offset); err != nil && err != io.EOF {
+		return fileChunkResult{nextOffset: offset, reset: rolledBack}, err
+	}
+	return fileChunkResult{data: buf, nextOffset: size, reset: rolledBack}, nil
+}
+
+func agentTerminalNeedsReseed(state agentTerminalViewState, paneTarget string, size paneSize, streamReset bool) bool {
+	if state.needsReset {
+		return true
+	}
+	if strings.TrimSpace(state.paneTarget) == "" {
+		return true
+	}
+	if state.paneTarget != paneTarget {
+		return true
+	}
+	if state.size != size {
+		return true
+	}
+	return streamReset
+}
+
+func hasTerminalControlData(data []byte) bool {
+	if len(data) == 0 {
+		return false
+	}
+	text := string(data)
+	if strings.Contains(text, "\x1b") {
+		return true
+	}
+	if strings.Contains(text, "\r") || strings.Contains(text, "\b") {
+		return true
+	}
+	return false
+}
+
+func syncAgentTerminalMirror(state agentTerminalViewState, paneTarget string, size paneSize, captureLines int, deps agentTerminalSyncDeps) (agentTerminalSyncResult, error) {
+	result := agentTerminalSyncResult{
+		nextState: agentTerminalViewState{
+			paneTarget:   paneTarget,
+			streamOffset: state.streamOffset,
+			size:         size,
+		},
+		ready: agentPromptUnknown,
+	}
+	reset := agentTerminalNeedsReseed(state, paneTarget, size, false)
+
+	var (
+		chunk      fileChunkResult
+		streamErr  error
+		streamPath string
+	)
+	if deps.ensureLog != nil {
+		streamPath, streamErr = deps.ensureLog(false)
+		if streamErr == nil && deps.readChunk != nil {
+			chunk, streamErr = deps.readChunk(streamPath, state.streamOffset)
+			if streamErr == nil && chunk.reset {
+				reset = true
+				if reseedPath, err := deps.ensureLog(true); err == nil {
+					streamPath = reseedPath
+					chunk, _ = deps.readChunk(streamPath, 0)
+				}
+			}
+		}
+	}
+	if errors.Is(streamErr, os.ErrNotExist) {
+		streamErr = nil
+		reset = true
+		result.nextState.needsReset = true
+	}
+	if streamErr != nil {
+		reset = true
+		result.nextState.needsReset = true
+	}
+	if streamErr == nil {
+		result.nextState.streamOffset = chunk.nextOffset
+	}
+
+	if reset {
+		if len(chunk.data) > 0 && hasTerminalControlData(chunk.data) {
+			result.ready = agentPromptStateForOutput(string(chunk.data))
+			result.data = chunk.data
+			result.reset = true
+			return result, nil
+		}
+		if deps.capture == nil {
+			if streamErr != nil {
+				return result, streamErr
+			}
+			return result, fmt.Errorf("agent snapshot capture is not available")
+		}
+		snapshot, err := deps.capture(captureLines)
+		if err != nil {
+			if streamErr != nil {
+				return result, streamErr
+			}
+			return result, err
+		}
+		if strings.TrimSpace(snapshot) == "" {
+			snapshot = "(agent pane is running, but no output yet)"
+			result.ready = agentPromptBusy
+		} else {
+			result.ready = agentPromptStateForOutput(snapshot)
+		}
+		result.data = []byte(snapshot)
+		result.reset = true
+		return result, nil
+	}
+
+	if len(chunk.data) > 0 {
+		result.data = chunk.data
+		result.ready = agentPromptStateForOutput(string(chunk.data))
+	}
+	result.reset = false
+	return result, nil
 }
 
 func (u *tuiState) setDiffANSI(text string, keepScroll bool) {
@@ -1923,21 +2824,13 @@ func (u *tuiState) worktreeGraphic(selectedPath string) string {
 			tmuxState = lipgloss.NewStyle().Foreground(ColorRed).Render("○")
 		}
 
-		agentState := lipgloss.NewStyle().Foreground(ColorCyan).Render("·")
-		switch wt.AgentState {
-		case "yes":
-			agentState = lipgloss.NewStyle().Foreground(ColorGreen).Render("●")
-		case "no":
-			agentState = lipgloss.NewStyle().Foreground(ColorRed).Render("○")
-		}
-
 		branchText := lipgloss.NewStyle().Bold(true).Foreground(branchColor).Render(truncate(branch, 42))
 		stateText := lipgloss.NewStyle().Foreground(stateColor).Render("(" + state + ")")
 		markerText := lipgloss.NewStyle().Foreground(markerColor).Render(marker)
 
 		line := fmt.Sprintf(
-			"%s%s %s %s tmux:%s agent:%s",
-			arm, markerText, branchText, stateText, tmuxState, agentState,
+			"%s%s %s %s tmux:%s",
+			arm, markerText, branchText, stateText, tmuxState,
 		)
 		lines = append(lines, line)
 
@@ -1970,20 +2863,17 @@ func (u *tuiState) setError(format string, args ...any) {
 }
 
 func (u *tuiState) footerKeymap() string {
-	base := "[::b]tab[::-] pane | [::b]r[::-] refresh | [::b]?[::-] help | [::b]q[::-] quit"
+	base := "[::b]tab[::-] pane | [::b]R[::-] refresh | [::b]?[::-] help | [::b]q[::-] quit"
 	focus := u.app.GetFocus()
-	inDetail := focus == u.detailPane || focus == u.detail || focus == u.diffFiles || focus == u.diffView
+	inDetail := focus == u.detailPane || focus == u.detail || focus == u.agentTerm || focus == u.diffFiles || focus == u.diffView
 
 	switch {
 	case focus == u.statusPane:
 		return "[::b]enter[::-] repos | " + base
 	case focus == u.table:
-		return "[::b]j/k[::-] move | [::b]enter[::-] attach | [::b]d[::-] detach | [::b]n[::-] new | [::b]x[::-] remove | [::b]/[::-] filter | " + base
+		return "[::b]j/k[::-] move | [::b]p[::-] preview | [::b]enter[::-] attach | " + base
 	case inDetail:
-		if u.detailTab == detailTabDiff {
-			return "[::b]j/k[::-] files | [::b]J/K[::-] patch scroll | [::b]h/l[::-] tab | " + base
-		}
-		return "[::b]j/k/pgup/pgdn[::-] scroll | [::b]h/l/[[/]][::-] tab | " + base
+		return "[::b]j/k[::-] rows | [::b]enter[::-] toggle dir | [::b]`[::-] tree/flat | [::b]-/=[::-] fold | [::b]J/K[::-] patch scroll | " + base
 	default:
 		return "[::b]tab[::-] cycle modal focus | [::b]esc[::-] close modal"
 	}
@@ -2699,7 +3589,7 @@ func (u *tuiState) showCreateModal() {
 		}
 	}
 
-	doCreate := func(branch string, fromExisting bool, copyUntracked bool) {
+	doCreate := func(branch string, fromExisting bool) {
 		if creating {
 			return
 		}
@@ -2708,16 +3598,17 @@ func (u *tuiState) showCreateModal() {
 			u.setWarn("branch name is required")
 			return
 		}
+		u.closeModal("create")
 		creating = true
 
-		totalSteps := 2 // create + refresh
-		if u.mgr.Cfg.AutoLaunch {
-			totalSteps++
+		// Creation runs entirely in the background so the UI stays interactive.
+		// Progress is surfaced through the footer status line instead of a
+		// blocking modal.
+		setBgStatus := func(msg string) {
+			u.app.QueueUpdateDraw(func() {
+				u.setStatus("%s", msg)
+			})
 		}
-		if u.mgr.Cfg.AutoStartAgent {
-			totalSteps++
-		}
-		advance, setProgressLabel, setStepProgress, stopProgress := u.showProgressModal("create-progress", "Create Worktree", totalSteps)
 
 		go func(branch string, fromExisting bool) {
 			var path string
@@ -2727,87 +3618,56 @@ func (u *tuiState) showCreateModal() {
 			var refreshErr error
 
 			var opts NewOptions
-			lastCopyUpdate := time.Time{}
-			renderCopyLabel := func(p CopyProgress) string {
-				switch p.Phase {
-				case "scan":
-					if p.TotalFiles <= 0 {
-						return "Scanning untracked files..."
-					}
-					return fmt.Sprintf("Scanning untracked files... %d files, %s total", p.TotalFiles, formatByteSize(p.TotalBytes))
-				default:
-					remainingFiles := p.TotalFiles - p.CopiedFiles
-					if remainingFiles < 0 {
-						remainingFiles = 0
-					}
-					remainingBytes := p.TotalBytes - p.CopiedBytes
-					if remainingBytes < 0 {
-						remainingBytes = 0
-					}
-					return fmt.Sprintf(
-						"Copying untracked files... %d/%d files (%d remaining) • %s/%s (%s remaining)",
-						p.CopiedFiles, p.TotalFiles, remainingFiles,
-						formatByteSize(p.CopiedBytes), formatByteSize(p.TotalBytes), formatByteSize(remainingBytes),
-					)
-				}
-			}
-			onCopyProgress := func(p CopyProgress) {
-				now := time.Now()
-				// Throttle UI updates while still showing smooth progress.
-				if p.CopiedFiles != p.TotalFiles && !lastCopyUpdate.IsZero() && now.Sub(lastCopyUpdate) < 120*time.Millisecond {
-					return
-				}
-				lastCopyUpdate = now
-				setProgressLabel(renderCopyLabel(p))
-				progress := 0.0
-				switch p.Phase {
-				case "scan":
-					progress = 0.05
-				default:
-					if p.TotalBytes > 0 {
-						progress = float64(p.CopiedBytes) / float64(p.TotalBytes)
-					} else if p.TotalFiles > 0 {
-						progress = float64(p.CopiedFiles) / float64(p.TotalFiles)
-					} else {
-						progress = 1.0
-					}
-					// Reserve a tiny tail for worktree finalization in the same step.
-					progress = 0.1 + (0.88 * progress)
-				}
-				setStepProgress(progress)
-			}
 			if fromExisting {
-				opts = NewOptions{
-					FromBranch:        branch,
-					Launch:            false,
-					SkipCopyUntracked: !copyUntracked,
-					OnCopyProgress:    onCopyProgress,
-				}
+				opts = NewOptions{FromBranch: branch, Launch: false}
 			} else {
-				opts = NewOptions{
-					Branch:            branch,
-					Launch:            false,
-					SkipCopyUntracked: !copyUntracked,
-					OnCopyProgress:    onCopyProgress,
-				}
+				opts = NewOptions{Branch: branch, Launch: false}
 			}
 
 			debugLogf("ui_create start branch=%q existing=%t auto_launch=%t auto_start_agent=%t", branch, fromExisting, u.mgr.Cfg.AutoLaunch, u.mgr.Cfg.AutoStartAgent)
-			advance("Creating worktree...")
+			setBgStatus(fmt.Sprintf("Creating worktree %s...", branch))
 			_, path, createErr = u.mgr.NewWorktree(opts)
 			if createErr != nil {
 				debugLogf("ui_create new_worktree failed branch=%q: %v", branch, createErr)
 			}
 
+			if createErr == nil && u.mgr.HasBootstrap() {
+				setBgStatus(fmt.Sprintf("Bootstrapping worktree %s...", branch))
+				lastLabel := time.Time{}
+				bootstrapOut := newLineWriter(func(line string) {
+					line = strings.TrimSpace(line)
+					if line == "" {
+						return
+					}
+					// Throttle UI redraws on noisy install output.
+					now := time.Now()
+					if !lastLabel.IsZero() && now.Sub(lastLabel) < 120*time.Millisecond {
+						return
+					}
+					lastLabel = now
+					setBgStatus(fmt.Sprintf("Bootstrapping %s: %s", branch, truncate(line, 60)))
+				})
+				if _, err := u.mgr.Bootstrap(BootstrapOptions{
+					Target: path,
+					OnStep: func(dir, run string) {
+						setBgStatus(fmt.Sprintf("Bootstrapping %s: %s", branch, truncate(run, 60)))
+					},
+					Out: bootstrapOut,
+				}); err != nil {
+					debugLogf("ui_create bootstrap failed path=%q: %v", path, err)
+					warnings = append(warnings, fmt.Sprintf("bootstrap failed: %v", err))
+				}
+			}
+
 			if createErr == nil && u.mgr.Cfg.AutoLaunch {
-				advance("Launching tmux tools...")
+				setBgStatus(fmt.Sprintf("Launching tmux tools for %s...", branch))
 				if _, err := u.mgr.Launch(LaunchOptions{Target: path, NoAttach: true}); err != nil {
 					debugLogf("ui_create auto_launch failed path=%q: %v", path, err)
 					warnings = append(warnings, fmt.Sprintf("launch failed: %v", err))
 				}
 			}
 			if createErr == nil && u.mgr.Cfg.AutoStartAgent {
-				advance("Starting agent...")
+				setBgStatus(fmt.Sprintf("Starting agent for %s...", branch))
 				if _, _, err := u.mgr.StartAgent(AgentOptions{Target: path, Attach: false}); err != nil {
 					debugLogf("ui_create auto_agent failed path=%q: %v", path, err)
 					warnings = append(warnings, fmt.Sprintf("agent start failed: %v", err))
@@ -2815,7 +3675,6 @@ func (u *tuiState) showCreateModal() {
 			}
 
 			if createErr == nil {
-				advance("Refreshing worktrees...")
 				refreshed, refreshErr = u.mgr.ListWorktrees()
 				if refreshErr != nil {
 					debugLogf("ui_create refresh failed path=%q: %v", path, refreshErr)
@@ -2823,11 +3682,8 @@ func (u *tuiState) showCreateModal() {
 			}
 
 			u.app.QueueUpdateDraw(func() {
-				stopProgress()
-				u.closeModal("create-progress")
-
 				if createErr != nil {
-					u.setError("create failed: %v", createErr)
+					u.setError("create failed (%s): %v", branch, createErr)
 					return
 				}
 
@@ -2857,140 +3713,13 @@ func (u *tuiState) showCreateModal() {
 		}(branch, fromExisting)
 	}
 
-	openCreateConfirm := func(branch string, fromExisting bool) {
-		branch = strings.TrimSpace(branch)
-		if branch == "" {
-			u.setWarn("branch name is required")
-			return
-		}
-
-		u.closeModal("create")
-
-		msg := tview.NewTextView().SetDynamicColors(true)
-		msg.SetBackgroundColor(tcell.ColorDefault)
-		msg.SetTextColor(tcell.ColorDefault)
-		msg.SetWrap(true)
-		mode := "new branch"
-		if fromExisting {
-			mode = "existing branch"
-		}
-		msg.SetText(fmt.Sprintf(
-			"Create worktree [::b]%s[::-] (%s)?\n\nChoose whether to include untracked + ignored files from the repo root.",
-			branch,
-			mode,
-		))
-		msg.SetBorder(true)
-		msg.SetBorderColor(paneBorderColor())
-
-		confirm := func(copyUntracked bool) {
-			u.closeModal("create-confirm")
-			doCreate(branch, fromExisting, copyUntracked)
-		}
-		cancel := func() {
-			u.closeModal("create-confirm")
-			u.showCreateModal()
-		}
-		var render func()
-
-		action := tview.NewTextView().
-			SetDynamicColors(true).
-			SetWrap(false)
-		action.SetBackgroundColor(tcell.ColorDefault)
-		action.SetTextColor(ansiColor(ansiCyan))
-
-		options := tview.NewTable().
-			SetSelectable(true, false).
-			SetBorders(false)
-		options.SetSeparator(' ')
-		options.SetBackgroundColor(tcell.ColorDefault)
-		options.SetSelectedStyle(tcell.StyleDefault.Foreground(tcell.ColorDefault).Background(tcell.ColorDefault).Reverse(true))
-		options.SetBorder(true)
-		options.SetBorderColor(paneBorderColor())
-
-		render = func() {
-			action.SetText(fmt.Sprintf(" r - Create worktree [::b]%s[::-]   u - Create with untracked files", branch))
-
-			options.SetCell(0, 0, tview.NewTableCell("r").SetTextColor(ansiColor(ansiCyan)).SetExpansion(1))
-			options.SetCell(0, 1, tview.NewTableCell("Create worktree").SetTextColor(tcell.ColorDefault).SetExpansion(1))
-			options.SetCell(1, 0, tview.NewTableCell("u").SetTextColor(ansiColor(ansiCyan)).SetExpansion(1))
-			options.SetCell(1, 1, tview.NewTableCell("Create with untracked + ignored files").SetTextColor(tcell.ColorDefault).SetExpansion(1))
-			options.SetCell(2, 0, tview.NewTableCell("c").SetTextColor(ansiColor(ansiCyan)).SetExpansion(1))
-			options.SetCell(2, 1, tview.NewTableCell("Cancel").SetTextColor(tcell.ColorDefault).SetExpansion(1))
-		}
-		render()
-
-		selectOption := func(row int) {
-			switch row {
-			case 0:
-				confirm(false)
-			case 1:
-				confirm(true)
-			default:
-				cancel()
-			}
-		}
-		options.SetSelectedFunc(func(row, _ int) {
-			selectOption(row)
-		})
-		options.SetInputCapture(func(ev *tcell.EventKey) *tcell.EventKey {
-			switch ev.Key() {
-			case tcell.KeyEnter:
-				row, _ := options.GetSelection()
-				selectOption(row)
-				return nil
-			case tcell.KeyEscape:
-				cancel()
-				return nil
-			}
-			if ev.Key() == tcell.KeyRune {
-				switch unicode.ToLower(ev.Rune()) {
-				case 'r':
-					confirm(false)
-					return nil
-				case 'u':
-					confirm(true)
-					return nil
-				case 'c':
-					cancel()
-					return nil
-				case 'j':
-					row, _ := options.GetSelection()
-					if row < 2 {
-						options.Select(row+1, 0)
-					}
-					return nil
-				case 'k':
-					row, _ := options.GetSelection()
-					if row > 0 {
-						options.Select(row-1, 0)
-					}
-					return nil
-				}
-			}
-			return ev
-		})
-
-		layout := tview.NewFlex().
-			SetDirection(tview.FlexRow).
-			AddItem(action, 1, 0, false).
-			AddItem(nil, 1, 0, false).
-			AddItem(options, 5, 0, true).
-			AddItem(nil, 1, 0, false).
-			AddItem(msg, 5, 0, false)
-		layout.SetBackgroundColor(tcell.ColorDefault)
-
-		u.showModal("create-confirm", layout, 96, 14)
-		options.Select(0, 0)
-		u.app.SetFocus(options)
-	}
-
 	selectCurrentRow := func() {
 		row, _ := branchTable.GetSelection()
 		if row < 1 || row-1 >= len(displayRows) {
 			return
 		}
 		r := displayRows[row-1]
-		openCreateConfirm(r.name, !r.isNew)
+		doCreate(r.name, !r.isNew)
 	}
 
 	cancel := func() {
@@ -3008,9 +3737,9 @@ func (u *tuiState) showCreateModal() {
 		case tcell.KeyEnter:
 			if len(displayRows) > 0 {
 				r := displayRows[0]
-				openCreateConfirm(r.name, !r.isNew)
+				doCreate(r.name, !r.isNew)
 			} else {
-				openCreateConfirm(strings.TrimSpace(input.GetText()), false)
+				doCreate(strings.TrimSpace(input.GetText()), false)
 			}
 			return nil
 		case tcell.KeyDown:
@@ -3142,79 +3871,25 @@ func (u *tuiState) showDeleteModal() {
 		}
 		removing = true
 		u.closeModal("delete")
-		advance, setProgressLabel, setStepProgress, stopProgress := u.showProgressModal("delete-progress", "Remove Worktree", 2)
 
 		go func() {
-			lastDeleteUpdate := time.Time{}
-			renderDeleteLabel := func(p DeleteProgress) string {
-				switch p.Phase {
-				case "scan":
-					if p.TotalFiles <= 0 {
-						return "Scanning worktree files..."
-					}
-					return fmt.Sprintf("Scanning worktree files... %d files, %s total", p.TotalFiles, formatByteSize(p.TotalBytes))
-				default:
-					remainingFiles := p.TotalFiles - p.DeletedFiles
-					if remainingFiles < 0 {
-						remainingFiles = 0
-					}
-					remainingBytes := p.TotalBytes - p.DeletedBytes
-					if remainingBytes < 0 {
-						remainingBytes = 0
-					}
-					label := fmt.Sprintf(
-						"Deleting files... %d/%d files (%d remaining) • %s/%s (%s remaining)",
-						p.DeletedFiles, p.TotalFiles, remainingFiles,
-						formatByteSize(p.DeletedBytes), formatByteSize(p.TotalBytes), formatByteSize(remainingBytes),
-					)
-					if p.CurrentPath != "" {
-						label = fmt.Sprintf("%s • %s", label, truncatePath(p.CurrentPath, 44))
-					}
-					return label
-				}
-			}
-			onDeleteProgress := func(p DeleteProgress) {
-				now := time.Now()
-				if p.Phase == "delete" && p.DeletedFiles != p.TotalFiles && !lastDeleteUpdate.IsZero() && now.Sub(lastDeleteUpdate) < 120*time.Millisecond {
-					return
-				}
-				lastDeleteUpdate = now
-				setProgressLabel(renderDeleteLabel(p))
-				progress := 0.0
-				switch p.Phase {
-				case "scan":
-					progress = 0.05
-				default:
-					if p.TotalBytes > 0 {
-						progress = float64(p.DeletedBytes) / float64(p.TotalBytes)
-					} else if p.TotalFiles > 0 {
-						progress = float64(p.DeletedFiles) / float64(p.TotalFiles)
-					} else {
-						progress = 1.0
-					}
-					progress = 0.1 + (0.88 * progress)
-				}
-				setStepProgress(progress)
-			}
-			advance("Removing worktree...")
+			// Async removal renames the worktree aside instantly and reaps its
+			// files in the background, so the list refreshes immediately instead
+			// of blocking on a large tree (node_modules, build output).
 			_, warnings, removeErr := u.mgr.Remove(RemoveOptions{
-				Target:           item.Path,
-				Force:            item.Dirty,
-				DeleteBranch:     false,
-				OnDeleteProgress: onDeleteProgress,
+				Target:       item.Path,
+				Force:        item.Dirty,
+				DeleteBranch: false,
+				Async:        true,
 			})
 
 			var refreshed []Worktree
 			var refreshErr error
 			if removeErr == nil {
-				advance("Refreshing worktrees...")
 				refreshed, refreshErr = u.mgr.ListWorktrees()
 			}
 
 			u.app.QueueUpdateDraw(func() {
-				stopProgress()
-				u.closeModal("delete-progress")
-
 				if removeErr != nil {
 					u.setError("remove failed: %v", removeErr)
 					return
@@ -3468,7 +4143,7 @@ func (u *tuiState) showHelpModal() {
 	}
 
 	focus := u.app.GetFocus()
-	inDetail := focus == u.detailPane || focus == u.detail || focus == u.diffFiles || focus == u.diffView
+	inDetail := focus == u.detailPane || focus == u.detail || focus == u.agentTerm || focus == u.diffFiles || focus == u.diffView
 	inTable := focus == u.table
 
 	var bindings []binding
@@ -3477,7 +4152,7 @@ func (u *tuiState) showHelpModal() {
 	// General bindings (always relevant)
 	general := []binding{
 		{Key: "tab / shift+tab", What: "Switch pane focus", Short: "Cycle focus across status, details, and worktrees panes."},
-		{Key: "r", What: "Refresh", Short: "Reload worktrees and repository metadata."},
+		{Key: "R", What: "Refresh", Short: "Reload worktrees and repository metadata."},
 		{Key: "?", What: "Open keybindings", Short: "Open this contextual help window."},
 		{Key: "esc", What: "Close modal", Short: "Cancel and close the current modal window."},
 		{Key: "q / ctrl+c", What: "Quit", Short: "Exit the TUI."},
@@ -3488,6 +4163,7 @@ func (u *tuiState) showHelpModal() {
 		bindings = []binding{
 			{Key: "j / k, up / down", What: "Move selection", Short: "Navigate through your list of git worktrees."},
 			{Key: "enter / g", What: "Attach to worktree", Short: "Open/focus the tmux session for the selected worktree."},
+			{Key: "p", What: "Promote to preview", Short: "Run the configured preview services from the selected worktree (▶ marks the current preview)."},
 			{Key: "d", What: "Detach session", Short: "Stop the selected worktree's tmux session (keeps worktree)."},
 			{Key: "n", What: "New worktree", Short: "Create a new branch and worktree from this repo."},
 			{Key: "x", What: "Remove worktree", Short: "Delete the selected worktree (and optionally its branch)."},
@@ -3496,17 +4172,12 @@ func (u *tuiState) showHelpModal() {
 	} else if inDetail && u.detailTab == detailTabDiff {
 		title = "Git Diff Help"
 		bindings = []binding{
-			{Key: "j / k", What: "Select file", Short: "Move through the list of changed files."},
+			{Key: "j / k", What: "Move rows", Short: "Move through files and directories in the diff list."},
+			{Key: "enter / space", What: "Toggle directory", Short: "Collapse or expand the selected directory row."},
+			{Key: "`", What: "Tree or flat view", Short: "Switch between a LazyGit-style tree and a flat file list."},
+			{Key: "- / =", What: "Collapse or expand all", Short: "Fold or unfold all directories in the tree view."},
 			{Key: "J / K", What: "Scroll patch", Short: "Scroll the patch view for the current file."},
 			{Key: "ctrl+u / ctrl+d", What: "Fast scroll", Short: "Scroll the patch view faster (10 lines)."},
-			{Key: "h / l, [ / ]", What: "Switch tab", Short: "Switch back to Agent Output or next tab."},
-		}
-	} else if inDetail && u.detailTab == detailTabAgent {
-		title = "Agent Output Help"
-		bindings = []binding{
-			{Key: "j / k, up / down", What: "Scroll output", Short: "Scroll through the agent's terminal output."},
-			{Key: "pgup / pgdn", What: "Fast scroll", Short: "Scroll through output faster."},
-			{Key: "h / l, [ / ]", What: "Switch tab", Short: "Switch to Git Diff or next tab."},
 		}
 	} else {
 		title = "General Help"
@@ -3660,6 +4331,47 @@ func (u *tuiState) goCurrent() {
 	if err := u.refresh(); err != nil {
 		u.setWarn("attach succeeded, refresh failed: %v", err)
 	}
+}
+
+func (u *tuiState) promoteSelectedPreview() {
+	item := u.selectedItem()
+	if item == nil {
+		u.setWarn("nothing selected")
+		return
+	}
+	if len(u.mgr.Cfg.PreviewWindows) == 0 {
+		u.setWarn("no preview services configured; add [[preview_windows]] to .sprout.toml")
+		return
+	}
+	branch := item.Branch
+	if branch == "" {
+		branch = filepath.Base(item.Path)
+	}
+	target := item.Path
+
+	// Promotion can block for a while (tmux window rebuilds plus waiting on the
+	// tunnel API), so run it off the event thread to keep the UI responsive and
+	// apply the result via QueueUpdateDraw.
+	u.setStatus("Promoting preview to %s...", branch)
+	go func(branch, target string) {
+		st, err := u.mgr.PromotePreview(PreviewOptions{Target: target})
+		u.app.QueueUpdateDraw(func() {
+			if err != nil {
+				u.setError("preview failed: %v", err)
+				return
+			}
+			u.previewWorktreePath = st.Path
+			if err := u.refresh(); err != nil {
+				u.setWarn("preview running, refresh failed: %v", err)
+				return
+			}
+			if len(st.SyncWarnings) > 0 {
+				u.setWarn("preview running from %s (%s)", branch, strings.Join(st.SyncWarnings, "; "))
+				return
+			}
+			u.setInfo("preview now running from %s", branch)
+		})
+	}(branch, target)
 }
 
 func (u *tuiState) launchCurrent() {

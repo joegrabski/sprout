@@ -4,7 +4,6 @@ import { PulsingBorder } from "@paper-design/shaders-react";
 import { Check, Copy, Terminal } from "lucide-react";
 import React, { useEffect, useRef, useState } from "react";
 import styles from "../../pages/index.module.css";
-import { DitheredBackdrop } from "./DitheredBackdrop";
 
 function CopyButton({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
@@ -92,7 +91,6 @@ export function InstallCommand() {
           ) : null
         }
       </BrowserOnly>
-      <DitheredBackdrop className={styles.ditherEdge} variant="hero" />
       <div className={styles.voxelInner}>
         <div className={styles.installLabel}>
           <Terminal size={13} />
