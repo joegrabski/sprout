@@ -1,6 +1,5 @@
 import React, { useState, useEffect } from "react";
 import { Bot, GitBranch, Terminal, Zap } from "lucide-react";
-import { DitheredBackdrop } from "./DitheredBackdrop";
 import styles from "../../pages/index.module.css";
 
 export function TmuxSection() {
@@ -119,7 +118,6 @@ export function TmuxSection() {
         <div className={styles.tmuxLayout} data-anim>
           <div className={styles.tmuxTerminal}>
             <div className={`${styles.tmuxFrame} ${styles.voxelSurface}`}>
-              <DitheredBackdrop className={styles.ditherEdge} variant="section" />
               <div
                 className={styles.voxelInner}
                 style={{
@@ -155,17 +153,15 @@ export function TmuxSection() {
           </div>
 
           <div className={styles.tmuxCopy}>
-            <span className={styles.sectionLabel}>Customization</span>
             <h2 className={styles.sectionTitle}>
               Configure your ideal environment.
             </h2>
             <p className={styles.tuiDescription}>
               Define every window and pane exactly how you work. Sprout scaffolds
-              your entire workspace using simple TOML rules — from code editors
-              to auto-running development servers.
+              your entire workspace from simple TOML rules, from code editors to
+              auto-running development servers.
             </p>
             <div className={`${styles.tmuxConfigBox} ${styles.voxelSurface}`}>
-              <DitheredBackdrop className={styles.ditherEdge} variant="section" />
               <div className={styles.voxelInner}>
                 <div className={styles.tmuxConfigHeader}>.sprout.toml</div>
                 <pre className={styles.tmuxConfigCode}>
