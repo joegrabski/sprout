@@ -68,9 +68,6 @@ auto_launch = true
 # Automatically start AI agent when creating worktrees
 auto_start_agent = true
 
-# Exclude patterns when copying untracked + ignored files
-copy_untracked_exclude = ["build", "dist/**"]
-
 # Check for updates (disable with SPROUT_UPDATE_CHECK=0)
 update_check = true
 
@@ -124,12 +121,6 @@ When {{ backtick }}true{{ backtick }}, automatically creates and attaches to a t
 
 When {{ backtick }}true{{ backtick }}, automatically starts an AI agent in a tmux window when creating a new worktree.
 
-### copy_untracked_exclude
-
-Patterns to exclude when copying untracked + ignored files into a new worktree.
-
-Patterns are matched against paths relative to the repo root. Supports glob syntax like {{ backtick }}*{{ backtick }} and {{ backtick }}?{{ backtick }}. Use {{ backtick }}dir/{{ backtick }} or {{ backtick }}dir/**{{ backtick }} to exclude a directory and all of its contents.
-
 ### update_check
 
 When {{ backtick }}true{{ backtick }}, Sprout checks GitHub for updates once per day. Disable by setting {{ backtick }}SPROUT_UPDATE_CHECK=0{{ backtick }}.
@@ -156,7 +147,7 @@ Supported values: {{ backtick }}codex{{ backtick }}, {{ backtick }}aider{{ backt
 
 ### session_prefix
 
-Prefix for tmux session names. Sessions will be named {{ backtick }}{prefix}-{branch}{{ backtick }}.
+Prefix for tmux session names. Worktree sessions are named from a stable worktree-path token (for example, {{ backtick }}{prefix}-{repo}-{worktree}{{ backtick }}) so switching branches inside the same worktree does not change the tmux session name.
 
 ### agent_command_*
 
@@ -166,6 +157,121 @@ Examples:
 - {{ backtick }}agent_command_codex = "codex"{{ backtick }}
 - {{ backtick }}agent_command_aider = "aider --model gpt-4"{{ backtick }}
 - {{ backtick }}agent_command_claude = "claude-code"{{ backtick }}
+
+## Structured tmux windows
+
+Use structured tmux window definitions when you want Sprout to launch specific windows and panes instead of the default tool-based layout.
+
+- {{ backtick }}[[windows]]{{ backtick }} configures child worktree sessions.
+- Set {{ backtick }}role = "agent"{{ backtick }} on a child window when that window should be treated as the agent window for attach.
+
+{{ backtick }}{{ backtick }}{{ backtick }}toml
+[[windows]]
+name = "editor"
+role = "agent"
+layout = "main-vertical"
+
+  [[windows.panes]]
+  run = "nvim ."
+
+  [[windows.panes]]
+  run = "pnpm dev"
+{{ backtick }}{{ backtick }}{{ backtick }}
+
+## Preview worktree
+
+Designate one worktree at a time as the **preview**: a dedicated tmux session ({{ backtick }}{prefix}-{repo}-{{ .OpenBrace }}preview_session_suffix{{ .CloseBrace }}{{ backtick }}) runs a configured set of long-running services from that worktree. Promoting another worktree tears the session down and rebuilds it pointed at the new worktree path, so you can validate an agent's branch by running your real stack against it.
+
+The current preview is recorded in a state file in the repo's git common dir, so every worktree of the repo agrees on which one is the preview.
+
+- {{ backtick }}[[preview_windows]]{{ backtick }} defines the services (same window/pane shape as {{ backtick }}[[windows]]{{ backtick }}, plus an optional {{ backtick }}url{{ backtick }} per service).
+- {{ backtick }}{{ .OpenBrace }}worktree{{ .CloseBrace }}{{ backtick }} in a pane {{ backtick }}dir{{ backtick }} is replaced with the preview worktree path.
+- {{ backtick }}preview_command_prefix{{ backtick }} optionally wraps each service command (e.g. a runner or profiler prefix). A pane whose {{ backtick }}dir{{ backtick }} resolves the same for every worktree (e.g. a fixed {{ backtick }}~{{ backtick }}) is left running across promotions instead of being restarted — use this for a shared tunnel agent like {{ backtick }}ngrok start --all{{ backtick }} so its URLs stay stable while you switch which worktree the code runs from.
+
+Preview panes run under your login+interactive shell ({{ backtick }}zsh{{ backtick }}/{{ backtick }}bash{{ backtick }}), so {{ backtick }}~/.zshrc{{ backtick }} / {{ backtick }}~/.zprofile{{ backtick }} are sourced and tools installed via version managers ({{ backtick }}mise{{ backtick }}, {{ backtick }}asdf{{ backtick }}, {{ backtick }}nvm{{ backtick }}) or Homebrew are on {{ backtick }}PATH{{ backtick }}.
+
+### Keeping app configs in sync ({{ backtick }}[[preview_sync]]{{ backtick }})
+
+When a frontend (e.g. a mobile app) reaches your backend through a tunnel, its config file holds the tunnel's public URL — and that URL changes whenever the tunnel restarts. {{ backtick }}[[preview_sync]]{{ backtick }} rewrites those values automatically after each promote by reading the live URLs from the tunnel agent's local API ({{ backtick }}preview_tunnel_api{{ backtick }}, an [ngrok](https://ngrok.com)-compatible {{ backtick }}/api/tunnels{{ backtick }} endpoint by default).
+
+- {{ backtick }}file{{ backtick }} is the JSON file to update (supports {{ backtick }}{{ .OpenBrace }}worktree{{ .CloseBrace }}{{ backtick }}).
+- Each {{ backtick }}[[preview_sync.set]]{{ backtick }} writes one dotted {{ backtick }}path{{ backtick }} (e.g. {{ backtick }}api.baseUrl{{ backtick }}) from a named {{ backtick }}tunnel{{ backtick }}, optionally through a {{ backtick }}template{{ backtick }} where {{ backtick }}{url}{{ backtick }} is the tunnel URL.
+- The file is only rewritten when a value actually changes; {{ backtick }}reload_windows{{ backtick }} names preview windows to restart in that case (e.g. a bundler that must reload to pick up the new URL). On a plain feature switch the URLs are unchanged, so nothing is rewritten and nothing reloads — no rebuild.
+
+Commands:
+
+{{ backtick }}{{ backtick }}{{ backtick }}bash
+sprout preview              # show current preview + service URLs
+sprout preview <target>     # promote a worktree to preview
+sprout preview stop         # stop the preview session
+sprout preview restart      # restart services from the current preview worktree
+sprout preview sync         # rewrite [[preview_sync]] configs from live tunnel URLs
+sprout preview logs <name>  # show recent output of a preview service
+{{ backtick }}{{ backtick }}{{ backtick }}
+
+In the TUI, press {{ backtick }}p{{ backtick }} to promote the selected worktree; the current preview is marked with {{ backtick }}▶{{ backtick }}.
+
+{{ backtick }}{{ backtick }}{{ backtick }}toml
+[[preview_windows]]
+name = "tunnel"                     # shared tunnel agent, left running across promotions
+
+  [[preview_windows.panes]]
+  dir = "~"                         # fixed dir → not restarted when the preview worktree changes
+  run = "ngrok start --all"
+
+[[preview_windows]]
+name = "api"
+url = "http://localhost:8080"
+
+  [[preview_windows.panes]]
+  dir = "{{ .OpenBrace }}worktree{{ .CloseBrace }}"
+  run = "make dev-api"
+
+[[preview_windows]]
+name = "web"
+
+  [[preview_windows.panes]]
+  dir = "{{ .OpenBrace }}worktree{{ .CloseBrace }}/web"
+  run = "npm run dev"
+
+# Rewrite the app's endpoint config from the live tunnel URLs on promote.
+[[preview_sync]]
+file = "{{ .OpenBrace }}worktree{{ .CloseBrace }}/web/config.json"
+reload_windows = ["web"]           # restart the dev server only when a URL actually changed
+
+  [[preview_sync.set]]
+  path = "api.baseUrl"
+  tunnel = "api"
+
+  [[preview_sync.set]]
+  path = "api.wsUrl"
+  tunnel = "api"
+  template = "{url}/socket"
+{{ backtick }}{{ backtick }}{{ backtick }}
+
+## Bootstrapping new worktrees
+
+Fresh git worktrees do not contain gitignored local state — {{ backtick }}node_modules{{ backtick }}, local config files, dev certs, cached data — so apps fail to start until the worktree is prepared. Sprout no longer copies untracked files into new worktrees; instead it bootstraps them:
+
+- {{ backtick }}bootstrap_links{{ backtick }} is a list of gitignored paths to **symlink** from the main worktree into the new one. Use this for small, identical-everywhere local config (e.g. {{ backtick }}.env{{ backtick }}, {{ backtick }}config.local.json{{ backtick }}, {{ backtick }}appsettings.Local.json{{ backtick }}) and for heavy shared local state (local DB/storage dirs). Do **not** link {{ backtick }}node_modules{{ backtick }} — it is per-branch build state and sharing it corrupts Yarn's state file.
+- {{ backtick }}[[bootstrap]]{{ backtick }} steps are commands ({{ backtick }}dir{{ backtick }} + {{ backtick }}run{{ backtick }}, same shape as panes) run in order to install dependencies, e.g. {{ backtick }}yarn install{{ backtick }} or {{ backtick }}dotnet restore{{ backtick }}. {{ backtick }}{{ .OpenBrace }}worktree{{ .CloseBrace }}{{ backtick }} in {{ backtick }}dir{{ backtick }} resolves to the worktree being bootstrapped.
+
+Bootstrap runs automatically on {{ backtick }}sprout new{{ backtick }} (skip with {{ backtick }}--no-bootstrap{{ backtick }}). Run {{ backtick }}sprout bootstrap [target]{{ backtick }} to (re)bootstrap an existing worktree — handy for worktrees created before bootstrap was configured.
+
+{{ backtick }}{{ backtick }}{{ backtick }}toml
+bootstrap_links = [
+  "web/config.local.json",
+  "api/appsettings.Local.json",
+]
+
+[[bootstrap]]
+dir = "{{ .OpenBrace }}worktree{{ .CloseBrace }}/web"
+run = "npm install"
+
+[[bootstrap]]
+dir = "{{ .OpenBrace }}worktree{{ .CloseBrace }}/api"
+run = "dotnet restore"
+{{ backtick }}{{ backtick }}{{ backtick }}
 `
 
 func main() {
@@ -197,13 +303,6 @@ func main() {
 			Default:     "true",
 			EnvVar:      "SPROUT_AUTO_START_AGENT",
 			Description: "Automatically start AI agent when creating worktrees",
-		},
-		{
-			Name:        "copy_untracked_exclude",
-			Type:        "array",
-			Default:     "[]",
-			EnvVar:      "SPROUT_COPY_UNTRACKED_EXCLUDE",
-			Description: "Exclude patterns when copying untracked + ignored files",
 		},
 		{
 			Name:        "update_check",
@@ -258,8 +357,71 @@ func main() {
 			Name:        "layout_<repo>_win_<name>_pane_<idx>",
 			Type:        "string",
 			Default:     "-",
-			EnvVar:      "-",
+			EnvVar:      "",
 			Description: "Custom multi-pane tmux window configuration",
+		},
+		{
+			Name:        "[[windows]]",
+			Type:        "table array",
+			Default:     "-",
+			EnvVar:      "",
+			Description: "Structured tmux window layout for child worktree sessions",
+		},
+		{
+			Name:        "preview_session_suffix",
+			Type:        "string",
+			Default:     "preview",
+			EnvVar:      "SPROUT_PREVIEW_SESSION_SUFFIX",
+			Description: "Suffix for the dedicated preview tmux session name",
+		},
+		{
+			Name:        "preview_command_prefix",
+			Type:        "string",
+			Default:     "",
+			EnvVar:      "SPROUT_PREVIEW_COMMAND_PREFIX",
+			Description: "Optional prefix wrapped around each preview service command (e.g. \"portless run\")",
+		},
+		{
+			Name:        "preview_auto_attach",
+			Type:        "bool",
+			Default:     "false",
+			EnvVar:      "SPROUT_PREVIEW_AUTO_ATTACH",
+			Description: "Attach to the preview session after promoting (default: run detached)",
+		},
+		{
+			Name:        "[[preview_windows]]",
+			Type:        "table array",
+			Default:     "-",
+			EnvVar:      "",
+			Description: "Long-running services run from the preview worktree",
+		},
+		{
+			Name:        "preview_tunnel_api",
+			Type:        "string",
+			Default:     "http://127.0.0.1:4040/api/tunnels",
+			EnvVar:      "SPROUT_PREVIEW_TUNNEL_API",
+			Description: "ngrok agent local API used by [[preview_sync]] to resolve tunnel URLs",
+		},
+		{
+			Name:        "[[preview_sync]]",
+			Type:        "table array",
+			Default:     "-",
+			EnvVar:      "",
+			Description: "Config files kept in sync with live tunnel URLs on each promote",
+		},
+		{
+			Name:        "bootstrap_links",
+			Type:        "array",
+			Default:     "[]",
+			EnvVar:      "SPROUT_BOOTSTRAP_LINKS",
+			Description: "Gitignored paths to symlink from the main worktree into each new worktree",
+		},
+		{
+			Name:        "[[bootstrap]]",
+			Type:        "table array",
+			Default:     "-",
+			EnvVar:      "",
+			Description: "Setup commands (dir + run) to run when bootstrapping a worktree",
 		},
 	}
 
