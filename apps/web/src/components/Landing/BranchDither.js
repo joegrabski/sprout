@@ -395,17 +395,32 @@ export default function BranchDither({
       }
     };
 
+    // Measure the document height with the wrap collapsed: the wrap is an
+    // absolutely-positioned element whose own height extends scrollHeight,
+    // so measuring while it's tall ratchets — one transient overestimate
+    // (fonts/images settling, a layout shift) and the canvas stays too tall
+    // forever, leaving a dead gap below the footer. Collapsing first makes
+    // the measurement reflect the real content, shrinkable in both
+    // directions.
+    const measureDocH = () => {
+      const prev = wrap.style.height;
+      wrap.style.height = "0px";
+      const h = Math.max(
+        window.innerHeight || 0,
+        document.documentElement.scrollHeight,
+        document.body ? document.body.scrollHeight : 0,
+      );
+      wrap.style.height = prev;
+      return h;
+    };
+
     const layout = () => {
       const dpr = 1; // full-page canvas — keep memory in check; dots are chunky
       wCss = Math.max(
         1,
         Math.floor(window.innerWidth || wrap.getBoundingClientRect().width),
       );
-      const docH = Math.max(
-        window.innerHeight || 0,
-        document.documentElement.scrollHeight,
-        document.body ? document.body.scrollHeight : 0,
-      );
+      const docH = measureDocH();
       hCss = docH;
       wrap.style.height = `${docH}px`;
       cols = Math.max(1, Math.ceil(wCss / cell));
@@ -461,20 +476,12 @@ export default function BranchDither({
 
     let lastKey = "";
     const maybeLayout = () => {
-      const docH = Math.max(
-        window.innerHeight || 0,
-        document.documentElement.scrollHeight,
-        document.body ? document.body.scrollHeight : 0,
-      );
-      const key = `${window.innerWidth}x${Math.round(docH / 60)}`;
+      const key = `${window.innerWidth}x${Math.round(measureDocH() / 60)}`;
       if (key === lastKey) return;
       lastKey = key;
       layout();
     };
-    lastKey = `${window.innerWidth}x${Math.round(
-      Math.max(window.innerHeight || 0, document.documentElement.scrollHeight) /
-        60,
-    )}`;
+    lastKey = `${window.innerWidth}x${Math.round(measureDocH() / 60)}`;
     layout();
     const settle = setTimeout(() => {
       lastKey = "";
