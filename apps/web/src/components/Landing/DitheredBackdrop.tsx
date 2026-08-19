@@ -15,7 +15,7 @@ type DitheredBackdropProps = {
 // page (looser dots); sections/CTA are tighter and dimmer so the growth stays a
 // subtle dark texture behind the content.
 const FIELD_PARAMS = {
-  hero: { cell: 7, dotR: 1.4, intensity: 1.0 },
+  hero: { cell: 7, dotR: 1.4, intensity: 0.75 },
   section: { cell: 7, dotR: 1.3, intensity: 0.85 },
   cta: { cell: 7, dotR: 1.3, intensity: 0.9 },
 } as const;

@@ -73,7 +73,7 @@ export function TUISection() {
                 </div>
                 <div className={styles.tuiPaneContent}>
                   <span className={styles.tuiGreen}>✓</span> <span className={styles.tuiMuted}>myapp</span>
-                  <span className={styles.tuiDim}> → </span>
+                  <span className={styles.tuiDim}> -&gt; </span>
                   <span className={styles.tuiGreen}>main</span>
                   <span className={styles.tuiDim}>{"  "}selected: </span>
                   <span className={styles.tuiGreen} style={{ transition: "opacity 0.25s", opacity: visible ? 1 : 0 }}>
@@ -146,8 +146,8 @@ export function TUISection() {
                         i === scene.rowIndex && styles.tuiTableRowSelected,
                       )}
                     >
-                      <span className={i === scene.rowIndex ? styles.tuiGreen : undefined}>
-                        {i === scene.rowIndex ? "*" : ""}
+                      <span className={i === 0 ? styles.tuiGreen : undefined}>
+                        {i === 0 ? "*" : ""}
                       </span>
                       <span className={styles.tuiMuted}>{row.label}</span>
                       <span className={row.status === "dirty" ? styles.tuiRed : styles.tuiGreen}>
@@ -161,11 +161,10 @@ export function TUISection() {
                 </div>
 
                 <div className={styles.tuiBottomBar}>
-                  <span className={styles.tuiDim}>└ tab cycle focus │ esc close help │ INFO: ready</span>
                   <span className={styles.tuiDim}>
-                    {scene.rowIndex + 1} of 4{"  "}─{" "}
-                    <span style={{ opacity: visible ? 1 : 0, transition: "opacity 0.25s" }}>{scene.worktree}</span> ↗
+                    ╰─ j/k move │ p preview │ enter attach │ tab pane │ ? help   INFO: ready
                   </span>
+                  <span className={styles.tuiDim}>─ sprout ╯</span>
                 </div>
               </div>
             </div>

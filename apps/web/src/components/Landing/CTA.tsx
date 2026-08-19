@@ -6,7 +6,7 @@ import styles from "../../pages/index.module.css";
 
 export function CTASection() {
   return (
-    <section className={styles.ctaSection}>
+    <section id="install" className={styles.ctaSection}>
       <div className="container">
         <div className={`${styles.ctaShell} ${styles.voxelSurface}`} data-anim>
           <div className={styles.voxelInner}>

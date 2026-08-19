@@ -173,7 +173,8 @@ body {
   border-bottom: 1px solid rgba(13, 175, 98, 0.1);
   backdrop-filter: blur(14px);
   -webkit-backdrop-filter: blur(14px);
-  position: relative;
+  position: sticky;
+  top: 0;
   z-index: 1000;
 }
 
@@ -217,19 +218,21 @@ body {
 }
 
 .navbar__logo {
-  height: 26px;
-  width: auto;
+  display: flex;
+  align-items: center;
 }
 
 .navbar__title {
-  font-weight: 800;
-  letter-spacing: -0.03em;
-  font-size: 1.05rem;
+  font-family: "Space Mono", monospace;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  font-size: 1rem;
 }
 
 .navbar__link {
+  font-family: "Space Mono", monospace;
   font-weight: 500;
-  font-size: 0.875rem;
+  font-size: 0.82rem;
 }
 
 .navbar__link:hover {

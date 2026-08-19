@@ -31,7 +31,7 @@ export function PreviewSection() {
   } as const;
 
   return (
-    <section className={styles.tmuxSection}>
+    <section id="preview" className={styles.tmuxSection}>
       <div className="container">
         <div className={styles.tmuxLayout} data-anim>
           <div className={styles.tmuxTerminal}>
@@ -60,20 +60,11 @@ export function PreviewSection() {
                     </span>
                   </div>
                   <div className={styles.terminalOutput}>
-                    <div className={styles.terminalSuccess}>✓ tunnel&nbsp;&nbsp;&nbsp;running</div>
-                    <div className={styles.terminalSuccess}>✓ api&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;running</div>
-                    <div className={styles.terminalSuccess}>✓ web&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;running</div>
-                    <div className={styles.terminalSuccess}>
-                      ✓ synced&nbsp;&nbsp;app config
+                    <div className={styles.terminalSuccess} style={fade}>
+                      ✓ Preview now running from {scene.branch}
                     </div>
                     <div className={styles.terminalPath} style={fade}>
-                      &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;apiUrl → {scene.url}
-                    </div>
-                    <div style={{ marginTop: "0.5rem" }}>
-                      <span className={styles.terminalCurrent}>▶</span>{" "}
-                      <span className={styles.terminalActive} style={fade}>
-                        preview live: {scene.branch}
-                      </span>
+                      &nbsp;&nbsp;api → {scene.url}
                     </div>
                   </div>
                 </div>
@@ -88,9 +79,9 @@ export function PreviewSection() {
             </h2>
             <p className={styles.tuiDescription}>
               Promote any worktree to a live preview and Sprout runs your whole
-              stack from it. Expose a service through a tunnel and the live URLs
-              are written into your app config on every switch, with no editing
-              and no rebuilds.
+              stack from it. Expose a service through ngrok and Sprout rewrites
+              the URL into your app config whenever it changes — no editing, no
+              rebuilds.
             </p>
             <div className={`${styles.tmuxConfigBox} ${styles.voxelSurface}`}>
               <div className={styles.voxelInner}>

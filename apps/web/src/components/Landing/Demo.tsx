@@ -40,7 +40,7 @@ function DemoCard({ icon: Icon, title, children }: DemoCardProps) {
 
 export function DemoSection() {
   return (
-    <section className={styles.demoSection}>
+    <section id="demo" className={styles.demoSection}>
       <div className="container">
         <div className={styles.demoHeader} data-anim>
           <div className={styles.demoHeaderLeft}>
@@ -60,11 +60,9 @@ export function DemoSection() {
               </span>
             </div>
             <div className={styles.terminalOutput}>
-              <div className={styles.terminalSuccess}>✓ branch created</div>
               <div className={styles.terminalSuccess}>
-                ✓ tmux session launched
+                ✓ Created worktree: ~/projects/myapp.worktrees/feat-checkout-redesign
               </div>
-              <div className={styles.terminalSuccess}>✓ tools started</div>
             </div>
           </DemoCard>
 
@@ -78,15 +76,15 @@ export function DemoSection() {
                 <div>
                   <span className={styles.terminalCurrent}>*</span>{" "}
                   feat/checkout-redesign{" "}
-                  <span className={styles.terminalActive}>active</span>
+                  <span className={styles.terminalDirty}>dirty</span>
                 </div>
                 <div>
                   &nbsp; main{" "}
-                  <span className={styles.terminalInactive}>clean</span>
+                  <span className={styles.terminalActive}>clean</span>
                 </div>
                 <div>
                   &nbsp; fix/login-bug{" "}
-                  <span className={styles.terminalInactive}>clean</span>
+                  <span className={styles.terminalActive}>clean</span>
                 </div>
               </div>
             </div>
@@ -96,12 +94,12 @@ export function DemoSection() {
             <div className={styles.terminalLine}>
               <span className={styles.terminalPrompt}>$</span>
               <span className={styles.terminalCommand}>
-                sprout go fix/login-bug
+                spr go fix/login-bug
               </span>
             </div>
             <div className={styles.terminalOutput}>
               <div className={styles.terminalPath}>
-                ~/projects/myapp.worktrees/fix-login-bug
+                ✓ ~/projects/myapp.worktrees/fix-login-bug
               </div>
             </div>
           </DemoCard>

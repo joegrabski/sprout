@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import styles from "./AsciiFlowField.module.css";
+import { BAYER, buildPalette, N, paintDots, TINTS } from "./dither";
 
 // A dark, dithered "growing branches" backdrop sized to the FULL page (absolute,
 // not fixed — it scrolls with the content; only the visible band is redrawn each
@@ -12,21 +13,6 @@ import styles from "./AsciiFlowField.module.css";
 //
 // Decorative: aria-hidden, pointer-inert, paused on hidden tabs, single static
 // frame under reduced motion.
-
-const BAYER = [
-  0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5,
-].map((v) => (v + 0.5) / 16);
-
-const LEVEL_ALPHA = [0.2, 0.32, 0.46, 0.6];
-const N = LEVEL_ALPHA.length;
-// Subtle green tints only — no teal/lime drift.
-const TINTS = [
-  [22, 74, 48],
-  [28, 86, 54],
-  [17, 63, 42],
-  [32, 92, 58],
-  [24, 79, 50],
-];
 
 const BRICK = 0.34;
 const SPAWN_DECAY = 0.76;
@@ -67,9 +53,7 @@ export default function BranchDither({
     const ctx = canvas.getContext("2d");
     if (!ctx) return undefined;
 
-    const PAL = TINTS.map(([r, g, b]) =>
-      LEVEL_ALPHA.map((a) => `rgba(${r}, ${g}, ${b}, ${(a * intensity).toFixed(3)})`),
-    );
+    const PAL = buildPalette(intensity);
 
     const reduced =
       typeof window !== "undefined" &&
@@ -102,7 +86,14 @@ export default function BranchDither({
     const idleInterval = 1000 / fps;
     const activeInterval = 1000 / 45;
     const brush = Math.max(1, Math.round(radius / 90));
-    const m = { cx: 0, cy: 0, lastCx: 0, lastCy: 0, active: false, lastMove: -1e6 };
+    const m = {
+      cx: 0,
+      cy: 0,
+      lastCx: 0,
+      lastCy: 0,
+      active: false,
+      lastMove: -1e6,
+    };
 
     const buildTree = (tree, tint, rx, ry, ang, len, depth, t0, rng) => {
       const dur = 0.05 + depth * 0.028;
@@ -158,20 +149,40 @@ export default function BranchDither({
         treeOffset[t] = rng() * treePeriod[t];
         const tint = (rng() * TINTS.length) | 0;
         const a = ang + (rng() - 0.5) * 0.5;
-        buildTree(t, tint, rx, ry, a, size * (0.9 + rng() * 0.5), 3 + (rng() < 0.4 ? 1 : 0), rng() * 0.4, rng);
+        buildTree(
+          t,
+          tint,
+          rx,
+          ry,
+          a,
+          size * (0.9 + rng() * 0.5),
+          3 + (rng() < 0.4 ? 1 : 0),
+          rng() * 0.4,
+          rng,
+        );
         t++;
       };
       // Top & bottom edges of the page.
       const nx = Math.max(1, Math.round(cols / spacing));
       for (let i = 0; i < nx; i++) {
-        addRoot((i + 0.2 + rng() * 0.6) * (cols / nx), rows + off, -Math.PI / 2, 0.9);
+        addRoot(
+          (i + 0.2 + rng() * 0.6) * (cols / nx),
+          rows + off,
+          -Math.PI / 2,
+          0.9,
+        );
         addRoot((i + 0.2 + rng() * 0.6) * (cols / nx), -off, Math.PI / 2, 0.7);
       }
       // Left & right edges, all the way down the page.
       const ny = Math.max(1, Math.round(rows / spacing));
       for (let i = 0; i < ny; i++) {
         addRoot(-off, (i + 0.2 + rng() * 0.6) * (rows / ny), 0, 0.8);
-        addRoot(cols + off, (i + 0.2 + rng() * 0.6) * (rows / ny), Math.PI, 0.8);
+        addRoot(
+          cols + off,
+          (i + 0.2 + rng() * 0.6) * (rows / ny),
+          Math.PI,
+          0.8,
+        );
       }
     };
 
@@ -219,7 +230,9 @@ export default function BranchDither({
           if (!isBrick[i]) continue;
           const along = bx * dirx + by * diry;
           const perp = -bx * diry + by * dirx;
-          const dd = Math.sqrt((along / (R + 1)) ** 2 * 0.45 + (perp / R) ** 2 * 1.7);
+          const dd = Math.sqrt(
+            (along / (R + 1)) ** 2 * 0.45 + (perp / R) ** 2 * 1.7,
+          );
           if (dd >= 1) continue;
           const fall = 1 - dd;
           const shove = amt * fall * PUSH_GAIN * cell;
@@ -231,15 +244,28 @@ export default function BranchDither({
           pushX[i] = nx;
           pushY[i] = ny;
           pushCells.add(i);
-          let sv = spawn[i] + SPAWN_GAIN * (0.6 + fall);
+          const sv = spawn[i] + SPAWN_GAIN * (0.6 + fall);
           spawn[i] = sv > SPAWN_MAX ? SPAWN_MAX : sv;
           spawnCells.add(i);
-          if (particles.length < FRAG_CAP && Math.random() < FRAG_CHANCE * (0.5 + fall)) {
-            const a = Math.atan2(diry, dirx) + (Math.random() - 0.5) * FRAG_SPREAD;
-            const spd = FRAG_SPEED * (0.5 + Math.random() * 0.9) * (0.6 + amt * fall);
+          if (
+            particles.length < FRAG_CAP &&
+            Math.random() < FRAG_CHANCE * (0.5 + fall)
+          ) {
+            const a =
+              Math.atan2(diry, dirx) + (Math.random() - 0.5) * FRAG_SPREAD;
+            const spd =
+              FRAG_SPEED * (0.5 + Math.random() * 0.9) * (0.6 + amt * fall);
             let lvl = (dens[i] * N) | 0;
             lvl = lvl < 0 ? 0 : lvl > N - 1 ? N - 1 : lvl;
-            particles.push({ x: gx + 0.5, y: gy + 0.5, vx: Math.cos(a) * spd, vy: Math.sin(a) * spd, life: 1, lvl, tint: tintGrid[i] });
+            particles.push({
+              x: gx + 0.5,
+              y: gy + 0.5,
+              vx: Math.cos(a) * spd,
+              vy: Math.sin(a) * spd,
+              life: 1,
+              lvl,
+              tint: tintGrid[i],
+            });
           }
         }
       }
@@ -254,7 +280,14 @@ export default function BranchDither({
         p.x += p.vx;
         p.y += p.vy;
         p.life *= FRAG_FADE;
-        if (p.life > 0.08 && p.x > -3 && p.y > -3 && p.x < cols + 3 && p.y < rows + 3) next.push(p);
+        if (
+          p.life > 0.08 &&
+          p.x > -3 &&
+          p.y > -3 &&
+          p.x < cols + 3 &&
+          p.y < rows + 3
+        )
+          next.push(p);
       }
       particles = next;
     };
@@ -272,7 +305,8 @@ export default function BranchDither({
       const steps = Math.min(48, Math.max(1, Math.floor(s / (cell * 0.7))));
       const ox = m.lastCx - dmx;
       const oy = m.lastCy - dmy;
-      for (let k = 0; k <= steps; k += 1) strike(ox + (dmx * k) / steps, oy + (dmy * k) / steps, amt, dirx, diry);
+      for (let k = 0; k <= steps; k += 1)
+        strike(ox + (dmx * k) / steps, oy + (dmy * k) / steps, amt, dirx, diry);
     };
 
     const draw = () => {
@@ -302,7 +336,8 @@ export default function BranchDither({
       }
       for (let gy = v0; gy < v1; gy++) {
         const base = gy * cols;
-        for (let gx = 0; gx < cols; gx++) isBrick[base + gx] = dens[base + gx] >= BRICK ? 1 : 0;
+        for (let gx = 0; gx < cols; gx++)
+          isBrick[base + gx] = dens[base + gx] >= BRICK ? 1 : 0;
       }
 
       if (useMouse) {
@@ -311,35 +346,43 @@ export default function BranchDither({
         if (spawnCells.size) {
           for (const i of spawnCells) {
             const v = spawn[i] * SPAWN_DECAY;
-            if (v < SPAWN_EPS) { spawn[i] = 0; spawnCells.delete(i); } else spawn[i] = v;
+            if (v < SPAWN_EPS) {
+              spawn[i] = 0;
+              spawnCells.delete(i);
+            } else spawn[i] = v;
           }
         }
         if (pushCells.size) {
           for (const i of pushCells) {
             const nx = pushX[i] * PUSH_DECAY;
             const ny = pushY[i] * PUSH_DECAY;
-            if (Math.abs(nx) < PUSH_EPS && Math.abs(ny) < PUSH_EPS) { pushX[i] = 0; pushY[i] = 0; pushCells.delete(i); }
-            else { pushX[i] = nx; pushY[i] = ny; }
+            if (Math.abs(nx) < PUSH_EPS && Math.abs(ny) < PUSH_EPS) {
+              pushX[i] = 0;
+              pushY[i] = 0;
+              pushCells.delete(i);
+            } else {
+              pushX[i] = nx;
+              pushY[i] = ny;
+            }
           }
         }
       }
 
       ctx.clearRect(0, v0 * cell, wCss, (v1 - v0) * cell);
       const d2 = dotR * 2;
-      for (let gy = v0; gy < v1; gy++) {
-        const yb = (gy & 3) * 4;
-        const cyc = gy * cell + cell / 2 - dotR;
-        for (let gx = 0; gx < cols; gx++) {
-          const i = gy * cols + gx;
-          const d = dens[i] + spawn[i];
-          if (d <= 0.02) continue;
-          if (d < BAYER[yb + (gx & 3)]) continue;
-          let lvl = (d * N) | 0;
-          if (lvl > N - 1) lvl = N - 1;
-          ctx.fillStyle = PAL[tintGrid[i]][lvl];
-          ctx.fillRect(gx * cell + cell / 2 - dotR + pushX[i], cyc + pushY[i], d2, d2);
-        }
-      }
+      paintDots(ctx, {
+        cols,
+        v0,
+        v1,
+        cell,
+        dotR,
+        dens,
+        tintGrid,
+        PAL,
+        spawn,
+        pushX,
+        pushY,
+      });
       if (particles.length) {
         for (const p of particles) {
           const gx = p.x | 0;
@@ -354,7 +397,10 @@ export default function BranchDither({
 
     const layout = () => {
       const dpr = 1; // full-page canvas — keep memory in check; dots are chunky
-      wCss = Math.max(1, Math.floor(window.innerWidth || wrap.getBoundingClientRect().width));
+      wCss = Math.max(
+        1,
+        Math.floor(window.innerWidth || wrap.getBoundingClientRect().width),
+      );
       const docH = Math.max(
         window.innerHeight || 0,
         document.documentElement.scrollHeight,
@@ -387,10 +433,15 @@ export default function BranchDither({
     const tick = (time) => {
       const dt = lastTime ? Math.min((time - lastTime) / 1000, 0.05) : 0.016;
       const movingRecently = useMouse && time - m.lastMove < 200;
-      const active = useMouse && (movingRecently || spawnCells.size || pushCells.size || particles.length);
+      const active =
+        useMouse &&
+        (movingRecently ||
+          spawnCells.size ||
+          pushCells.size ||
+          particles.length);
       const interval = active ? activeInterval : idleInterval;
       if (time - lastTime >= interval) {
-        clock += dt * (0.6 + 1.0 * Math.pow(0.5 + 0.5 * Math.sin(clock * 0.6), 6.0));
+        clock += dt * (0.6 + 1.0 * (0.5 + 0.5 * Math.sin(clock * 0.6)) ** 6.0);
         lastTime = time;
         draw();
       }
@@ -421,7 +472,8 @@ export default function BranchDither({
       layout();
     };
     lastKey = `${window.innerWidth}x${Math.round(
-      Math.max(window.innerHeight || 0, document.documentElement.scrollHeight) / 60,
+      Math.max(window.innerHeight || 0, document.documentElement.scrollHeight) /
+        60,
     )}`;
     layout();
     const settle = setTimeout(() => {
@@ -445,8 +497,13 @@ export default function BranchDither({
       m.active = true;
       m.lastMove = e.timeStamp || performance.now();
     };
-    const onLeave = () => { m.active = false; };
-    const onVis = () => { if (document.hidden) stop(); else start(); };
+    const onLeave = () => {
+      m.active = false;
+    };
+    const onVis = () => {
+      if (document.hidden) stop();
+      else start();
+    };
     if (useMouse) {
       window.addEventListener("pointermove", onMove, { passive: true });
       window.addEventListener("blur", onLeave);
@@ -471,7 +528,12 @@ export default function BranchDither({
   }, [cell, dotR, fps, speed, mousePunch, radius, intensity]);
 
   return (
-    <div ref={wrapRef} aria-hidden="true" className={`${styles.field} ${className}`.trim()} style={style}>
+    <div
+      ref={wrapRef}
+      aria-hidden="true"
+      className={`${styles.field} ${className}`.trim()}
+      style={style}
+    >
       <canvas ref={canvasRef} className={styles.canvas} />
     </div>
   );

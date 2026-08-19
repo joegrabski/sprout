@@ -25,12 +25,10 @@
     "@paper-design/shaders-react": "^0.0.71",
     "animejs": "^4.3.6",
     "clsx": "^2.0.0",
-    "konva": "^10.2.0",
     "lucide-react": "^0.575.0",
     "prism-react-renderer": "^2.3.0",
     "react": "^19.0.0",
-    "react-dom": "^19.0.0",
-    "react-konva": "^19.2.2"
+    "react-dom": "^19.0.0"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.4.2",

@@ -48,13 +48,13 @@ const FEATURES = [
     n: "08",
     title: "Configs that follow your tunnels",
     description:
-      "Expose a service through a tunnel and Sprout rewrites the URLs into your app config on every switch. No stale tunnel URLs, no hand-editing, no rebuilds.",
+      "Expose a service through ngrok and Sprout rewrites the URL into your app config whenever it changes. No stale tunnel URLs, no hand-editing, no rebuilds.",
   },
 ];
 
 export function FeaturesSection() {
   return (
-    <section className={styles.featuresSection}>
+    <section id="features" className={styles.featuresSection}>
       <div className="container">
         <div className={styles.featuresLayout}>
           <div className={styles.featuresIntro}>

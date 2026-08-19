@@ -132,7 +132,7 @@ export function TmuxSection() {
               </div>
               {/* Tmux Status Bar */}
               <div className={`${styles.tmuxStatus} ${styles.voxelInner}`}>
-                <div className={styles.tmuxStatusLeft}>[sprout-feat]</div>
+                <div className={styles.tmuxStatusLeft}>[sprout-myapp-feat-api]</div>
                 <div className={styles.tmuxTabs}>
                   {windows.map((w) => (
                     <span
