@@ -112,3 +112,11 @@ sprout shell-hook <zsh|bash|fish>
 ```
 
 Output shell integration code. See [Installation](installation.md) for setup.
+
+## `sprout skills`
+
+```
+sprout skills install [name...] [--dir <path>] [--force]
+```
+
+Install the Claude Code skills bundled with sprout into `~/.claude/skills`. A skill that is already installed is skipped unless `--force` is set. See [Agent skills](skills.md).

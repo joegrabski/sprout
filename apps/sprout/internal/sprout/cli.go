@@ -5,11 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/lipgloss/table"
 	"github.com/spf13/cobra"
+
+	"sprout/skills"
 )
 
 var (
@@ -190,6 +193,20 @@ var (
 		Hidden: true,
 		Run:    runDaemonRun,
 	}
+
+	skillsCmd = &cobra.Command{
+		Use:   "skills",
+		Short: "Manage the Claude Code skills bundled with sprout",
+	}
+
+	skillsInstallCmd = &cobra.Command{
+		Use:   "install [name...]",
+		Short: "Install the bundled Claude Code skills",
+		Long: "Copy the skills bundled with sprout into ~/.claude/skills.\n" +
+			"Installs all of them unless names are given. A skill that is already\n" +
+			"installed is skipped unless --force is set, and a symlinked skill is never overwritten.",
+		Run: runSkillsInstall,
+	}
 )
 
 func emitCDMarkerIfEnabled(cfg Config, path string) {
@@ -221,7 +238,43 @@ func init() {
 	previewCmd.AddCommand(previewStatusCmd, previewStopCmd, previewRestartCmd, previewSyncCmd, previewLogsCmd)
 
 	daemonCmd.AddCommand(daemonStartCmd, daemonStopCmd, daemonStatusCmd, daemonRunCmd)
-	rootCmd.AddCommand(uiCmd, newCmd, listCmd, goCmd, pathCmd, launchCmd, detachCmd, agentCmd, previewCmd, bootstrapCmd, rmCmd, doctorCmd, shellHookCmd, versionCmd, daemonCmd)
+
+	skillsInstallCmd.Flags().String("dir", "", "Skills directory (default ~/.claude/skills)")
+	skillsInstallCmd.Flags().Bool("force", false, "Overwrite skills that are already installed")
+	skillsCmd.AddCommand(skillsInstallCmd)
+
+	rootCmd.AddCommand(uiCmd, newCmd, listCmd, goCmd, pathCmd, launchCmd, detachCmd, agentCmd, previewCmd, bootstrapCmd, rmCmd, doctorCmd, shellHookCmd, versionCmd, daemonCmd, skillsCmd)
+}
+
+func runSkillsInstall(cmd *cobra.Command, args []string) {
+	dir, _ := cmd.Flags().GetString("dir")
+	force, _ := cmd.Flags().GetBool("force")
+	if dir == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, ErrorMsg(err.Error()))
+			os.Exit(1)
+		}
+		dir = filepath.Join(home, ".claude", "skills")
+	}
+
+	results, err := InstallSkills(skills.FS, dir, args, force)
+	for _, r := range results {
+		switch r.Status {
+		case SkillInstalled:
+			fmt.Println(SuccessMsg("installed " + r.Name + " to " + StylePath.Render(r.Path)))
+		case SkillUpdated:
+			fmt.Println(SuccessMsg("updated " + r.Name + " in " + StylePath.Render(r.Path)))
+		case SkillExists:
+			fmt.Println(InfoMsg(r.Name + " is already installed (use --force to update)"))
+		case SkillSymlink:
+			fmt.Println(InfoMsg(r.Name + " is a symlink, left alone"))
+		}
+	}
+	if err != nil {
+		fmt.Fprintln(os.Stderr, ErrorMsg(err.Error()))
+		os.Exit(1)
+	}
 }
 
 func getManager() *Manager {
