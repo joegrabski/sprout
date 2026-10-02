@@ -7,6 +7,7 @@ const sidebars: SidebarsConfig = {
     "configuration",
     "cli",
     "agents",
+    "skills",
     "troubleshooting",
   ],
 };

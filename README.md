@@ -83,6 +83,19 @@ Built-in support for:
 
 Each worktree can have its own AI coding assistant with independent context.
 
+### Claude Code Skills
+Sprout bundles two Claude Code skills (source in `apps/sprout/skills`):
+- `sprout-init` generates a `.sprout.toml` for a repository (preview services, bootstrap links and commands, tunnel URL sync).
+- `sprout-issue` takes a GitHub issue and creates a worktree with a Claude agent already planning it in a detached tmux session.
+
+Install them into `~/.claude/skills` with:
+
+```bash
+sprout skills install
+```
+
+You can also use the [skills CLI](https://www.npmjs.com/package/skills) (`npx skills add joegrabski/sprout`). See the [skills guide](https://sprout.dev/docs/skills) for details.
+
 ## Documentation
 
 Full documentation is available at [sprout.dev](https://sprout.dev)

@@ -11,6 +11,7 @@ Each worktree gets its own tmux session with your editor, lazygit, and an AI age
 - [Configuration](https://sprout.dev/docs/configuration): Config file options, environment variables, and example config
 - [CLI Reference](https://sprout.dev/docs/cli): All sprout commands with syntax and examples
 - [AI Agents](https://sprout.dev/docs/agents): Supported agents (Codex, Aider, Claude Code, Gemini), setup and API keys
+- [Agent skills](https://sprout.dev/docs/skills): Claude Code skills that create a worktree from a GitHub issue and generate a .sprout.toml, installed with sprout skills install
 - [Troubleshooting](https://sprout.dev/docs/troubleshooting): Common issues and solutions
 
 ## Reference

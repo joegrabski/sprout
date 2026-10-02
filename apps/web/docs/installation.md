@@ -44,6 +44,16 @@ sprout version
 sprout doctor
 ```
 
+## Agent skills (optional)
+
+Claude Code skills that create a worktree from a GitHub issue and generate your `.sprout.toml`:
+
+```bash
+sprout skills install
+```
+
+See [Agent skills](/docs/skills).
+
 ## Shell integration
 
 Enables automatic directory changing with `sprout go` and `sprout new`.

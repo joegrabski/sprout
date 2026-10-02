@@ -40,6 +40,10 @@ sprout agent stop feat/my-feature
 
 Agents stop automatically when you remove a worktree.
 
+## Claude Code skills
+
+Sprout ships skills that create a worktree from a GitHub issue and generate your `.sprout.toml`. Install them with `sprout skills install`. See [Agent skills](/docs/skills).
+
 ## TUI agent status
 
 The main worktree table includes a dedicated `AGENT` column.
