@@ -6,7 +6,7 @@ sidebar_position: 4
 
 ## `sprout` / `sprout ui`
 
-Launch the interactive TUI.
+Launch the interactive TUI. See [The TUI](/docs/tui) for the panes and keys.
 
 ## `sprout new`
 

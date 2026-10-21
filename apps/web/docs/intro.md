@@ -17,7 +17,7 @@ sprout go feat/checkout-redesign
 sprout
 ```
 
-Each worktree gets its own tmux session with your editor, lazygit, and optional AI agent, all isolated per branch. The TUI keeps the worktree list, agent status, and diff review surface together in one board.
+Each worktree gets its own tmux session with your editor, lazygit, and optional AI agent, all isolated per branch. The [TUI](/docs/tui) keeps the worktree list, pull request and CI status, agent status, and diff review together in one board, and lets you stage and commit from it.
 
 ## Quick start
 

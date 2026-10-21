@@ -4,7 +4,7 @@ sidebar_position: 5
 
 # AI Agents
 
-Sprout runs AI coding agents in dedicated tmux windows within each worktree's session. The TUI keeps the worktree list, agent status, and git diff review pane together while tmux remains the full interactive workspace.
+Sprout runs AI coding agents in dedicated tmux windows within each worktree's session. The [TUI](/docs/tui) keeps the worktree list, agent status, and git diff review together while tmux remains the full interactive workspace.
 
 Use `sprout agent attach` or `sprout go` when you want the full live tmux workspace. Use the TUI when you want to review several agent sessions on one repo from a single board.
 
@@ -46,16 +46,13 @@ Sprout ships skills that create a worktree from a GitHub issue and generate your
 
 ## TUI agent status
 
-The main worktree table includes a dedicated `AGENT` column.
-
-- `AGENT` shows whether the selected worktree agent is busy, ready, needs input, offline, or unavailable.
-
-Main agent actions:
+Each running agent shows its state next to its worktree in the [TUI](/docs/tui): `ready`, `busy` or `needs input`. Sprout works this out by reading the agent's tmux pane, for every running agent at once, so you can see which ones are waiting for you without opening them.
 
 - `enter` or `g`: attach to the worktree tmux session
 - `p`: promote the selected worktree to preview
+- `]`: switch the fourth pane to the **Agent** tab, a live read-only view of the selected agent's pane
 
-The detail pane stays focused on git diff and review context. Agent interaction happens in tmux.
+Agent interaction itself still happens in tmux. The TUI never types into the pane or resizes it.
 
 ## API keys
 

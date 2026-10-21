@@ -1504,3 +1504,84 @@
   text-shadow: 0 2px 22px rgba(2, 8, 5, 0.55);
 }
 
+
+/* Real TUI screenshots (see components/Landing/TUI.tsx) */
+.tuiStack {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2.5rem;
+  max-width: 1040px;
+  margin: 0 auto;
+}
+
+.tuiStack .tuiCopy {
+  max-width: 640px;
+  text-align: center;
+}
+
+.tuiStack .tuiPoints {
+  align-items: flex-start;
+  text-align: left;
+  display: inline-flex;
+}
+
+.tuiStack .tuiFrame {
+  width: 100%;
+}
+
+.tuiScreenWrap {
+  overflow-x: auto;
+  background: #0d1117;
+  padding: 0.9rem 1rem 1rem;
+}
+
+[data-theme="dark"] .tuiScreenWrap {
+  background: #070f0c;
+}
+
+.tuiScreen {
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  width: max-content;
+  min-width: 100%;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, "DejaVu Sans Mono", monospace;
+  font-size: 0.7rem;
+  line-height: 1.3;
+  color: #e6edf3;
+  white-space: pre;
+}
+
+.tuiScenes {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.5rem;
+}
+
+.tuiSceneButton {
+  appearance: none;
+  border: 1px solid rgba(13, 175, 98, 0.25);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 0.8rem;
+  padding: 0.35rem 0.9rem;
+  border-radius: 999px;
+  cursor: pointer;
+  opacity: 0.75;
+  transition: opacity 0.15s, background 0.15s;
+}
+
+.tuiSceneButton:hover {
+  opacity: 1;
+}
+
+.tuiSceneButtonActive {
+  opacity: 1;
+  background: rgba(13, 175, 98, 0.12);
+  border-color: var(--sprout-green);
+}
