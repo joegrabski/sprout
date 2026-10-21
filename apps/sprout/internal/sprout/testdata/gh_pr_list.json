@@ -1,0 +1,17 @@
+[
+ {"headRefName":"feat/billing","isCrossRepository":false,"isDraft":false,"number":12,"state":"OPEN","updatedAt":"2026-10-01T10:00:00Z","url":"https://github.com/acme/api/pull/12",
+  "statusCheckRollup":[
+   {"__typename":"CheckRun","completedAt":"2026-10-01T09:00:00Z","conclusion":"SUCCESS","name":"test","startedAt":"2026-10-01T08:59:00Z","status":"COMPLETED","workflowName":"CI"},
+   {"__typename":"StatusContext","context":"deploy/preview","state":"SUCCESS","targetUrl":"https://example.com"}]},
+ {"headRefName":"fix/auth-timeout","isCrossRepository":false,"isDraft":true,"number":14,"state":"OPEN","updatedAt":"2026-10-02T10:00:00Z","url":"https://github.com/acme/api/pull/14",
+  "statusCheckRollup":[
+   {"__typename":"CheckRun","conclusion":"SUCCESS","name":"lint","status":"COMPLETED","workflowName":"CI"},
+   {"__typename":"CheckRun","conclusion":"FAILURE","name":"test","status":"COMPLETED","workflowName":"CI"}]},
+ {"headRefName":"chore/deps","isCrossRepository":false,"isDraft":false,"number":15,"state":"OPEN","updatedAt":"2026-10-03T10:00:00Z","url":"https://github.com/acme/api/pull/15",
+  "statusCheckRollup":[
+   {"__typename":"CheckRun","conclusion":"","name":"test","status":"IN_PROGRESS","workflowName":"CI"}]},
+ {"headRefName":"chore/deps","isCrossRepository":false,"isDraft":false,"number":9,"state":"MERGED","updatedAt":"2026-09-01T10:00:00Z","url":"https://github.com/acme/api/pull/9","statusCheckRollup":[]},
+ {"headRefName":"main","isCrossRepository":true,"isDraft":false,"number":20,"state":"OPEN","updatedAt":"2026-10-04T10:00:00Z","url":"https://github.com/acme/api/pull/20","statusCheckRollup":[]},
+ {"headRefName":"feat/old-branch","isCrossRepository":false,"isDraft":false,"number":3,"state":"MERGED","updatedAt":"2026-08-01T10:00:00Z","url":"https://github.com/acme/api/pull/3","statusCheckRollup":[]},
+ {"headRefName":"feat/old-branch","isCrossRepository":false,"isDraft":false,"number":4,"state":"CLOSED","updatedAt":"2026-08-05T10:00:00Z","url":"https://github.com/acme/api/pull/4","statusCheckRollup":[]}
+]
