@@ -561,12 +561,10 @@ func BenchmarkRefreshRepoChoicesForce(b *testing.B) {
 		}
 	}
 
-	u := &tuiState{repoRoot: firstRepo}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		u.lastRepoScan = time.Time{}
-		u.refreshRepoChoices(true)
-		if len(u.repos) == 0 {
+		repos, _, _ := scanRepos(firstRepo, "", nil)
+		if len(repos) == 0 {
 			b.Fatal("expected repos")
 		}
 	}
