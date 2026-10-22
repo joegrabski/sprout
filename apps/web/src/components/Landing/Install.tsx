@@ -25,7 +25,7 @@ function CopyButton({ text }: { text: string }) {
   );
 }
 
-function InstallLine({ command }: { command: string }) {
+export function InstallLine({ command }: { command: string }) {
   return (
     <div className={styles.installLine}>
       <span className={styles.commandPrompt}>$</span>

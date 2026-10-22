@@ -99,10 +99,12 @@ func (m *Manager) ListBranches(repoRoot string) ([]BranchInfo, error) {
 		result = append(result, BranchInfo{Name: name})
 	}
 
-	remoteOut, _ := runCmdOutput(repoRoot, "git", "branch", "-r", "--format=%(refname:short)")
+	// Full ref names: the short form of refs/remotes/origin/HEAD is just
+	// "origin", which would be listed as if it were a branch.
+	remoteOut, _ := runCmdOutput(repoRoot, "git", "branch", "-r", "--format=%(refname)")
 	for _, ref := range strings.Split(strings.TrimSpace(remoteOut), "\n") {
-		ref = strings.TrimSpace(ref)
-		if ref == "" {
+		ref = strings.TrimPrefix(strings.TrimSpace(ref), "refs/remotes/")
+		if ref == "" || strings.HasSuffix(ref, "/HEAD") {
 			continue
 		}
 		name := ref

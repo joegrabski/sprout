@@ -15,6 +15,7 @@ Guidance for AI coding agents and automation working in this repository.
 - `apps/web`: Docusaurus documentation site.
 - `apps/web/docs`: authored docs plus generated command/config reference pages.
 - `apps/web/scripts`: docs generation scripts.
+- `apps/sprout/skills`: Claude Code skills (`sprout-init`, `sprout-issue`), one `<name>/SKILL.md` directory each. Embedded in the binary (`skills.go`) for `sprout skills install` and discovered by `npx skills add joegrabski/sprout`. A new skill directory must be named `sprout-*` to be embedded.
 - `Makefile`: top-level build/docs helpers.
 - `go.work`: Go workspace, currently includes `./apps/sprout`.
 

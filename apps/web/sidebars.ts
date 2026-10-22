@@ -6,7 +6,9 @@ const sidebars: SidebarsConfig = {
     "installation",
     "configuration",
     "cli",
+    "tui",
     "agents",
+    "skills",
     "troubleshooting",
   ],
 };

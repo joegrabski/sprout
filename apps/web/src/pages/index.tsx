@@ -6,6 +6,7 @@ import { DemoSection } from "../components/Landing/Demo";
 import { PreviewSection } from "../components/Landing/Preview";
 import { TUISection } from "../components/Landing/TUI";
 import { TmuxSection } from "../components/Landing/Tmux";
+import { SkillsSection } from "../components/Landing/Skills";
 import { CTASection } from "../components/Landing/CTA";
 import { DitheredBackdrop } from "../components/Landing/DitheredBackdrop";
 import { LandingAnimations } from "../components/Landing/Animations";
@@ -28,6 +29,7 @@ export default function Home(): ReactNode {
         <PreviewSection />
         <TUISection />
         <TmuxSection />
+        <SkillsSection />
         <CTASection />
       </main>
     </Layout>

@@ -55,7 +55,7 @@ func main() {
 	commands := []Command{}
 
 	// Parse help text for each command
-	for _, cmd := range []string{"ui", "new", "list", "go", "path", "launch", "detach", "agent", "rm", "doctor", "shell-hook"} {
+	for _, cmd := range []string{"ui", "new", "list", "go", "path", "launch", "detach", "agent", "rm", "doctor", "shell-hook", "skills"} {
 		helpText, usage, description := getCommandHelp(sproutBinary, cmd)
 		commands = append(commands, Command{
 			Name:        cmd,
@@ -280,6 +280,25 @@ Installation:
 
   # For Fish (add to ~/.config/fish/config.fish)
   sprout shell-hook fish | source`
+	case "skills":
+		usage = "sprout skills install [name...] [--dir <path>] [--force]"
+		description = "Install the Claude Code skills bundled with sprout."
+		helpText = `Copies the skills bundled in the sprout binary into your Claude Code skills directory.
+
+Arguments:
+  [name...]  Skills to install (default: all of them)
+
+Flags:
+  --dir <path>  Skills directory (default: ~/.claude/skills)
+  --force       Overwrite skills that are already installed
+
+A skill that is already installed is skipped unless --force is set. A skill that is a
+symlink (for example one linked to a working checkout) is never overwritten.
+
+Examples:
+  sprout skills install
+  sprout skills install sprout-issue
+  sprout skills install --force   # refresh after upgrading sprout`
 	}
 
 	return

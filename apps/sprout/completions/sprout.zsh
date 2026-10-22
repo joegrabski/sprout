@@ -14,6 +14,7 @@ _sprout() {
     'rm:remove a worktree'
     'doctor:check tool and repo health'
     'shell-hook:print shell integration script'
+    'skills:manage bundled Claude Code skills'
     'version:print version'
     'help:show help'
   )
@@ -69,6 +70,13 @@ _sprout() {
           ;;
         shell-hook)
           _arguments '1:shell:(zsh bash fish)'
+          ;;
+        skills)
+          _arguments \
+            '1:action:(install)' \
+            '*:skill:_message "skill name"' \
+            '--dir[skills directory]:directory:_files -/' \
+            '--force[overwrite installed skills]'
           ;;
       esac
       ;;

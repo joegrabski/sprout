@@ -18,6 +18,16 @@ Modern documentation website for Sprout built with Docusaurus 3, Bun, and Lucide
 - Feature cards with icon badges
 - One-click install with copy button
 
+## TUI screenshots
+
+The terminal on the landing page shows real frames of `sprout`, not a mock-up. They are captured from a throwaway demo repo (isolated `HOME`, private tmux server, a fake `gh` and fake agents, so nothing touches your real setup) and written to `src/components/Landing/tuiFrames.generated.ts`. Regenerate them after changing the TUI:
+
+```bash
+scripts/tui-demo/capture.sh     # needs go, tmux and bun
+```
+
+To poke at the same demo yourself: `scripts/tui-demo/demo.sh setup`, then `scripts/tui-demo/demo.sh run` (and `teardown` when done).
+
 ## Quick Start
 
 ### From Project Root

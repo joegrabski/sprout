@@ -43,6 +43,7 @@ go test ./...
 - `sprout rm <branch-or-worktree> [--delete-branch] [--force]`
 - `sprout doctor`
 - `sprout shell-hook <zsh|bash|fish>`
+- `sprout skills install [name...] [--dir <path>] [--force]`
 - `sprout version`
 
 ## Config

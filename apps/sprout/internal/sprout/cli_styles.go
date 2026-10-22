@@ -2,7 +2,6 @@ package sprout
 
 import (
 	"github.com/charmbracelet/lipgloss"
-	"github.com/gdamore/tcell/v2"
 )
 
 var (
@@ -93,10 +92,4 @@ func WarnMsg(msg string) string {
 
 func InfoMsg(msg string) string {
 	return StyleInfo.Render("• ") + msg
-}
-
-// ColorToTcell converts a lipgloss Color to a tcell Color
-func ColorToTcell(c lipgloss.Color) tcell.Color {
-	// Simple conversion for basic hex colors
-	return tcell.GetColor(string(c))
 }
